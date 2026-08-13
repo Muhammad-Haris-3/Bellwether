@@ -15,11 +15,15 @@ maintained itself, and here is the evidence it did so honestly.*
 **Live:** [bellwether-phi.vercel.app](https://bellwether-phi.vercel.app) ·
 **API:** [bellwether-fyyz.onrender.com/health](https://bellwether-fyyz.onrender.com/health)
 
-> **Status: M0 complete.** The label loop is proven, ingestion runs
-> unattended, and the append-only guarantee is verified on the production
-> database. No model exists yet — by design, and
-> [PREREGISTRATION.md](PREREGISTRATION.md) was committed while that was still
-> true. See [Bellwether_M0_Spec.md](Bellwether_M0_Spec.md).
+> **Status: M0–M2 complete.** The label loop is proven, ingestion runs
+> unattended within a fixed storage budget, and **KC-2 is cleared** — there
+> is real signal beyond the trivial heuristic, measured against a margin
+> fixed before any model existed. The verdict, its null check and its
+> ablation are public at [/kc2](https://bellwether-fyyz.onrender.com/kc2).
+>
+> The maturity window is still unset, and
+> [/maturity](https://bellwether-fyyz.onrender.com/maturity) says so in its
+> own response rather than serving a number.
 
 ---
 
@@ -88,6 +92,7 @@ Finding those in week one is what M0 is for.
 | [Bellwether_M1_Spec.md](Bellwether_M1_Spec.md) | The storage budget, the sampling frame, and a requirement withdrawn rather than built |
 | [Bellwether_M1_Summary.md](Bellwether_M1_Summary.md) | What M1 measured, including two contradictory clauses in the SRS |
 | [Bellwether_M2_Spec.md](Bellwether_M2_Spec.md) | The maturity window, the leakage traps, and the criterion that can end the project |
+| [Bellwether_M2_Summary.md](Bellwether_M2_Summary.md) | KC-2 cleared — and the ablation showing it rests on one drifting feature |
 | [PREREGISTRATION.md](PREREGISTRATION.md) | The promotion rule, fixed before any model existed |
 
 ## Local setup
