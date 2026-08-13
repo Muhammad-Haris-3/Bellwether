@@ -76,12 +76,23 @@ def read_cursor(conn: Any) -> datetime | None:
 
 
 def write_cursor(conn: Any, position: datetime, run_id: Any) -> None:
+    """Advance the cursor. It never moves backwards.
+
+    GREATEST, not assignment. A backfill run started with --since sets its own
+    window, and without this it would drag the cursor back to wherever the
+    backfill ended — so the next scheduled run would re-read every edit between
+    there and now, and keep doing it after every backfill.
+
+    Monotonicity also makes the job safe against an out-of-order pair of runs,
+    where a delayed run finishes after a later one and would otherwise rewind
+    the cursor to its own, older position.
+    """
     conn.execute(
         """
         INSERT INTO landing.cursors (job, position_utc, updated_at_utc, updated_by_run)
         VALUES (%s, %s, %s, %s)
         ON CONFLICT (job) DO UPDATE
-           SET position_utc   = EXCLUDED.position_utc,
+           SET position_utc   = GREATEST(landing.cursors.position_utc, EXCLUDED.position_utc),
                updated_at_utc = EXCLUDED.updated_at_utc,
                updated_by_run = EXCLUDED.updated_by_run
         """,

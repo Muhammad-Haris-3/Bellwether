@@ -87,6 +87,39 @@ def test_cursor_round_trips(fresh_db: None) -> None:
         assert read_cursor(conn) == position
 
 
+def test_the_cursor_never_moves_backwards(fresh_db: None) -> None:
+    """A backfill must not rewind live ingestion.
+
+    `--since` sets its own window, so without monotonicity a backfill of a
+    three-day-old window would drag the cursor back to where that window ended,
+    and the next scheduled run would re-read everything from there to now — and
+    would do it again after every backfill.
+
+    The same guard covers a delayed run finishing after a later one and
+    rewinding the cursor to its own older position.
+    """
+    run_id = new_run_id()
+    live = datetime(2026, 8, 13, 12, tzinfo=UTC)
+    backfill_end = datetime(2026, 8, 10, 14, tzinfo=UTC)
+
+    with connect() as conn:
+        write_cursor(conn, live, run_id)
+        write_cursor(conn, backfill_end, run_id)
+
+    with connect() as conn:
+        assert read_cursor(conn) == live
+
+
+def test_the_cursor_still_advances_forwards(fresh_db: None) -> None:
+    run_id = new_run_id()
+    with connect() as conn:
+        write_cursor(conn, datetime(2026, 8, 13, 12, tzinfo=UTC), run_id)
+        write_cursor(conn, datetime(2026, 8, 13, 13, tzinfo=UTC), run_id)
+
+    with connect() as conn:
+        assert read_cursor(conn) == datetime(2026, 8, 13, 13, tzinfo=UTC)
+
+
 def test_cursor_does_not_advance_when_the_page_fails(fresh_db: None) -> None:
     """A run that dies between committing rows and moving the cursor must leave
     the cursor behind, not ahead. Behind costs a re-read; ahead loses data."""
