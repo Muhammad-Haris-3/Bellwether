@@ -2,7 +2,7 @@
 
 **Milestone:** M0 — Label loop proof and walking skeleton
 **Started / completed:** 2026-08-13
-**Status:** 8 of 9 tasks complete. A-4 (deliberate outage) in progress.
+**Status:** Complete. All 9 tasks, all 10 acceptance criteria.
 **Live:** [bellwether-phi.vercel.app](https://bellwether-phi.vercel.app) ·
 [API](https://bellwether-fyyz.onrender.com/health)
 
@@ -163,15 +163,44 @@ Per the Definition of Done, verified against the deployed system:
 
 ---
 
-## 8. Outstanding
+## 8. A-4 — the deliberate outage
 
-**A-4, the deliberate outage.** Ingest disabled 2026-08-13 ~14:59Z with the
-cursor at `2026-08-13T14:51:27Z` and 35,956 events. After a two-hour gap and
-re-enabling, the backfill must close it with no hole and no duplicates.
+Ingestion was disabled for **3 hours 9 minutes**, from a cursor at
+`2026-08-13T14:51:27Z`. The labelling workflow was deliberately left running,
+so the two could be told apart.
 
-`/stats` now publishes `coverage` — gap count, largest gap, hours covered
-against hours spanned — so this is checkable by anyone, not only by whoever
-holds database credentials.
+| | Before | After one run |
+|---|---|---|
+| Events | 35,956 | **49,580** (+13,624) |
+| Newest event | 14:51:27Z | **18:00:37Z** |
+| Gaps over 10 min | 1 | **1** |
+| Largest gap | 3977.8 min | **3977.8 min** |
+
+**The gap count did not move.** The single remaining gap is the deliberate
+discontinuity between the Aug-10 backfill and the Aug-13 live slice — the same
+one, unchanged, from `2026-08-10T16:35:06Z` to `2026-08-13T10:52:54Z`. The
+three-hour outage left none.
+
+13,624 edits over 189 minutes is 72/minute, above the 56–62/minute measured
+earlier in the day and consistent with peak editing hours rather than with
+duplication. Duplicates are structurally impossible in any case: the primary
+key on `revid` and `ON CONFLICT DO NOTHING` make idempotency a property of the
+schema rather than of the code.
+
+A single run closed the whole window, within its page budget, in 72 seconds.
+
+**What this proves.** A missed run costs latency, not data. That is the entire
+justification for building on a scheduler that openly does not guarantee
+punctuality, and it is now demonstrated rather than asserted.
+
+Verified through `/stats`, which publishes `coverage` — gap count, largest gap
+and its bounds, hours covered against hours spanned. Anyone can check this
+claim without database access, which is the same standard the append-only
+guarantee is held to.
+
+Also observed during the outage: labelling continued and did useful work while
+ingestion was dark, taking outcome checks from 18,072 to 30,072. The jobs are
+genuinely independent.
 
 ---
 

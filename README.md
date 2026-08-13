@@ -15,7 +15,7 @@ maintained itself, and here is the evidence it did so honestly.*
 **Live:** [bellwether-phi.vercel.app](https://bellwether-phi.vercel.app) ·
 **API:** [bellwether-fyyz.onrender.com/health](https://bellwether-fyyz.onrender.com/health)
 
-> **Status: M0 in progress.** The label loop is proven, ingestion runs
+> **Status: M0 complete.** The label loop is proven, ingestion runs
 > unattended, and the append-only guarantee is verified on the production
 > database. No model exists yet — by design, and
 > [PREREGISTRATION.md](PREREGISTRATION.md) was committed while that was still
