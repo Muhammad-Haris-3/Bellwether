@@ -13,3 +13,8 @@ out/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Model artifacts are committed deliberately by the Train workflow, but a
+# local training run should not leave one lying in the working tree.
+models/*.pkl
+!models/champion-*.pkl

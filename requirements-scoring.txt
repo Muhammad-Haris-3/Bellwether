@@ -1,0 +1,10 @@
+# Model dependencies, used only by the steps that train, score or evaluate.
+#
+# Deliberately not folded into requirements-pipeline.txt. Ingestion, labelling,
+# gap-healing and retention have no business carrying a model library, and
+# keeping them separate means the version that produced an artifact is pinned
+# in one place rather than repeated across three workflow files — where they
+# would drift, and a model would eventually be scored by a library that did not
+# train it.
+numpy==2.5.2
+scikit-learn==1.9.0

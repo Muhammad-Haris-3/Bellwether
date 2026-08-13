@@ -44,7 +44,7 @@ jobs:
       # numpy and scikit-learn live in the dev requirements, not the pipeline
       # ones — the scheduled jobs have no business carrying a model library.
       - name: Install
-        run: pip install -r requirements-pipeline.txt numpy==2.5.2 scikit-learn==1.9.0
+        run: pip install -r requirements-pipeline.txt -r requirements-scoring.txt
 
       # Before anything is trained. A leaky feature produces a model that
       # scores beautifully and is worthless, and the point of KC-2 is to find

@@ -75,6 +75,22 @@ jobs:
         if: always()
         run: python -m bellwether.gapfill
 
+      # Immediately after ingestion, so the gap between an edit and its score is
+      # as small as this architecture allows. The scorer exits cleanly when no
+      # model is registered, so this step is harmless before M3 completes.
+      #
+      # Model dependencies are installed only for this step, from their own
+      # pinned file. The library version that trains an artifact must be the
+      # one that scores with it, and pinning it in three workflow files would
+      # drift.
+      - name: Install the scoring dependencies
+        if: always()
+        run: pip install -r requirements-scoring.txt
+
+      - name: Score newly ingested edits
+        if: always()
+        run: python -m bellwether.score
+
       - name: Surface the failure
         if: failure()
         run: |

@@ -1,0 +1,85 @@
+name: Train
+
+# Manual only, like Evaluate, and for the same reason.
+#
+# A model retrained on a schedule is a model chosen by whichever run happened
+# to look best, which is the selection the pre-registration exists to prevent.
+# M5 introduces retraining on a trigger — decay, drift, or a floor interval —
+# and promotion by a rule fixed before any of it existed. Until then, training
+# is a deliberate act.
+on:
+  workflow_dispatch:
+    inputs:
+      window_start:
+        description: "Training window start, ISO 8601"
+        required: true
+        default: "2026-08-10T00:00:00Z"
+      window_end:
+        description: "Training window end, ISO 8601"
+        required: true
+        default: "2026-08-11T00:00:00Z"
+
+concurrency:
+  group: train
+  cancel-in-progress: false
+
+permissions:
+  # To commit models/. The artifact is evidence, and a promotion should be
+  # verifiable by someone holding the repository and no database access.
+  contents: write
+
+jobs:
+  train:
+    name: Train and register the champion
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      BELLWETHER_DATABASE_URL: ${{ secrets.BELLWETHER_DATABASE_URL }}
+      BELLWETHER_ENV: production
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements-pipeline.txt -r requirements-scoring.txt
+
+      # Before the data is touched, let alone fitted to.
+      - name: Knowability guard
+        run: python -m bellwether.knowability
+
+      - name: Train
+        run: |
+          set -o pipefail
+          python -m bellwether.train \
+            --from "${{ inputs.window_start }}" \
+            --to   "${{ inputs.window_end }}" 2>&1 | tee train-output.txt
+
+      # The registry row records a SHA-256 the scorer verifies before loading.
+      # If the artifact never reaches git, that row points at nothing and every
+      # subsequent scoring run refuses — loudly, which is the intended failure,
+      # but the commit is what makes it unnecessary.
+      - name: Commit the artifact and its card
+        run: |
+          if [ -z "$(git status --porcelain models/)" ]; then
+            echo "no new model to commit"
+            exit 0
+          fi
+          git config user.name  "bellwether-bot"
+          git config user.email "noreply@github.com"
+          git add models/
+          git commit -m "Register $(ls -t models/*.json | head -1 | xargs -n1 basename .json)"
+          git push
+
+      - name: Surface the failure
+        if: failure()
+        run: |
+          DETAIL=$(tail -40 train-output.txt 2>/dev/null \
+            | sed 's/%/%25/g; s/\r//g' \
+            | awk '{printf "%s%%0A", $0}')
+          echo "::error title=train failed::$DETAIL"

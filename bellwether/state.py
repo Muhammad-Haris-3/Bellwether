@@ -182,6 +182,70 @@ def observe_revert(state: dict[str, Any], event: dict[str, Any]) -> None:
         page["reverted"] += 1
 
 
+LOAD_EDITORS_SQL = """
+SELECT user_key, first_seen_utc, last_seen_utc, edits_seen,
+       reverts_performed, edits_reverted
+  FROM landing.editor_state
+ WHERE user_key = ANY(%(keys)s)
+"""
+
+LOAD_PAGES_SQL = """
+SELECT page_key, first_seen_utc, last_seen_utc, edits_seen, edits_reverted
+  FROM landing.page_state
+ WHERE page_key = ANY(%(keys)s)
+"""
+
+LOAD_FRONTIER_SQL = """
+SELECT value_bigint FROM landing.pipeline_state WHERE state_key = 'max_user_id'
+"""
+
+
+def load_for(conn: Any, events: list[dict[str, Any]]) -> dict[str, Any]:
+    """State for exactly the editors and pages in this batch.
+
+    Not the whole table. At steady state these hold tens of thousands of rows,
+    and reading all of them every ten minutes to score a few dozen events would
+    be absurd — and would get worse every day the project runs.
+
+    The id frontier is global and always read, because it is one number.
+    """
+    users = sorted({user_key(e) for e in events})
+    pages = sorted({page_key(e) for e in events})
+    st: dict[str, Any] = {"editors": {}, "pages": {}}
+
+    with conn.cursor() as cur:
+        cur.execute(LOAD_EDITORS_SQL, {"keys": users})
+        for row in cur.fetchall():
+            st["editors"][row["user_key"]] = {
+                "first": row["first_seen_utc"],
+                "last": row["last_seen_utc"],
+                "edits": row["edits_seen"],
+                "reverts_performed": row["reverts_performed"],
+                "edits_reverted": row["edits_reverted"],
+            }
+        cur.execute(LOAD_PAGES_SQL, {"keys": pages})
+        for row in cur.fetchall():
+            st["pages"][row["page_key"]] = {
+                "first": row["first_seen_utc"],
+                "last": row["last_seen_utc"],
+                "edits": row["edits_seen"],
+                "reverted": row["edits_reverted"],
+            }
+        cur.execute(LOAD_FRONTIER_SQL)
+        row = cur.fetchone()
+        st["max_user_id"] = int(row["value_bigint"]) if row and row["value_bigint"] else 0
+
+    return st
+
+
+PERSIST_FRONTIER_SQL = """
+INSERT INTO landing.pipeline_state (state_key, value_bigint, updated_at_utc)
+VALUES ('max_user_id', %(value)s, now())
+ON CONFLICT (state_key) DO UPDATE
+   SET value_bigint = GREATEST(landing.pipeline_state.value_bigint, EXCLUDED.value_bigint),
+       updated_at_utc = EXCLUDED.updated_at_utc
+"""
+
 PERSIST_EDITOR_SQL = """
 INSERT INTO landing.editor_state
     (user_key, first_seen_utc, last_seen_utc, edits_seen, reverts_performed, edits_reverted)
@@ -233,6 +297,10 @@ def persist(conn: Any, state: dict[str, Any]) -> tuple[int, int]:
             cur.executemany(PERSIST_EDITOR_SQL, editors)
         if pages:
             cur.executemany(PERSIST_PAGE_SQL, pages)
+        # GREATEST, so a partial batch can never move the frontier backwards.
+        # An id that has been seen has been seen.
+        if state.get("max_user_id"):
+            cur.execute(PERSIST_FRONTIER_SQL, {"value": state["max_user_id"]})
     return len(editors), len(pages)
 
 

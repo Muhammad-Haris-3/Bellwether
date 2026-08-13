@@ -64,13 +64,21 @@ def test_the_run_is_bounded(name: str) -> None:
 
 @pytest.mark.parametrize("name", sorted(SCHEDULED))
 def test_production_jobs_do_not_install_test_dependencies(name: str) -> None:
-    """pytest and respx have no business running against the live database."""
+    """pytest and respx have no business running against the live database.
+
+    Stated as a ban on the dev requirements rather than a demand for one
+    specific file. The first version required every install to name
+    requirements-pipeline.txt, which failed the moment scoring needed its own
+    pinned model dependencies — a true rule enforced by a proxy that was not.
+    """
     steps = next(iter(_load(name)["jobs"].values()))["steps"]
     installs = [s.get("run", "") for s in steps if "pip install" in s.get("run", "")]
     assert installs, "no install step found"
     for cmd in installs:
-        assert "requirements-pipeline.txt" in cmd
         assert "requirements-dev.txt" not in cmd
+        assert "pytest" not in cmd
+        # Every install comes from a pinned file, never a bare package name.
+        assert "-r " in cmd, cmd
 
 
 @pytest.mark.parametrize("name", sorted(SCHEDULED))
@@ -119,3 +127,27 @@ def test_maintenance_can_write_to_the_repository() -> None:
     """A seal in a database is worth little; in public git history it is the
     whole mechanism."""
     assert _load("maintain.yml")["permissions"]["contents"] == "write"
+
+
+def test_training_and_evaluation_are_never_scheduled() -> None:
+    """Both are decision procedures, not maintenance.
+
+    A model retrained on a timer is a model chosen by whichever run happened to
+    look best, and an evaluation on a timer invites re-rolling until a result
+    is acceptable. Both are exactly the selection the pre-registration exists
+    to prevent, so both are manual until M5 introduces retraining on a trigger
+    with promotion by a rule fixed beforehand.
+    """
+    for name in ("train.yml", "evaluate.yml"):
+        assert "schedule" not in _triggers(_load(name)), name
+        assert "workflow_dispatch" in _triggers(_load(name)), name
+
+
+def test_the_scorer_runs_straight_after_ingestion() -> None:
+    """The lag between an edit and its score is one polling interval plus
+    whatever the scheduler adds. Putting scoring in its own workflow would add
+    another interval for nothing."""
+    steps = [s.get("name", "") for s in _load("ingest.yml")["jobs"]["ingest"]["steps"]]
+    ingest = next(i for i, n in enumerate(steps) if n == "Ingest recent changes")
+    scoring = next(i for i, n in enumerate(steps) if n == "Score newly ingested edits")
+    assert ingest < scoring
