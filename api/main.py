@@ -63,6 +63,32 @@ SELECT DISTINCT ON (job)
  ORDER BY job, started_at_utc DESC
 """
 
+# Coverage, not just endpoints.
+#
+# Oldest and newest describe a SPAN. A backfill of an old window plus a live
+# slice spans three days while covering a fraction of them, and every rate
+# computed over that is a rate over disjoint samples. Publishing the gaps makes
+# the difference checkable by anyone, rather than by whoever has database
+# access — which is also what makes the outage test (M0 A-4) verifiable from
+# outside the project.
+COVERAGE_SQL = """
+WITH ordered AS (
+    SELECT event_ts, lag(event_ts) OVER (ORDER BY event_ts) AS prev
+      FROM landing.rc_events
+),
+steps AS (
+    SELECT event_ts, prev, event_ts - prev AS delta
+      FROM ordered WHERE prev IS NOT NULL
+)
+SELECT count(*) FILTER (WHERE delta > interval '10 minutes')            AS gap_count,
+       COALESCE(EXTRACT(epoch FROM max(delta)), 0)::int                 AS largest_gap_seconds,
+       COALESCE(EXTRACT(epoch FROM sum(delta)
+                FILTER (WHERE delta > interval '10 minutes')), 0)::int  AS missing_seconds,
+       (SELECT prev FROM steps ORDER BY delta DESC LIMIT 1)             AS largest_gap_from,
+       (SELECT event_ts FROM steps ORDER BY delta DESC LIMIT 1)         AS largest_gap_to
+  FROM steps
+"""
+
 MATURE_SQL = """
 SELECT sampling_stratum,
        count(*) AS n,
@@ -120,8 +146,21 @@ def stats() -> dict[str, Any]:
         totals = conn.execute(STATS_SQL).fetchone() or {}
         runs = conn.execute(RUNS_SQL).fetchall()
         mature = conn.execute(MATURE_SQL).fetchall()
+        cover = conn.execute(COVERAGE_SQL).fetchone() or {}
+
+    spanned = 0.0
+    if totals.get("newest_event") and totals.get("oldest_event"):
+        spanned = (totals["newest_event"] - totals["oldest_event"]).total_seconds()
 
     return {
+        "coverage": {
+            "spanned_hours": round(spanned / 3600, 2),
+            "covered_hours": round(max(spanned - cover.get("missing_seconds", 0), 0) / 3600, 2),
+            "gaps_over_10_min": cover.get("gap_count", 0),
+            "largest_gap_minutes": round(cover.get("largest_gap_seconds", 0) / 60, 1),
+            "largest_gap_from": cover.get("largest_gap_from"),
+            "largest_gap_to": cover.get("largest_gap_to"),
+        },
         "totals": {
             "events": totals.get("events", 0),
             "events_logged_out": totals.get("events_logged_out", 0),
