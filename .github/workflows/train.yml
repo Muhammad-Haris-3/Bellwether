@@ -73,7 +73,13 @@ jobs:
           git config user.name  "bellwether-bot"
           git config user.email "noreply@github.com"
           git add models/
-          git commit -m "Register $(ls -t models/*.json | head -1 | xargs -n1 basename .json)"
+          # basename takes (path, suffix) in that order. Piping into
+          # `xargs -n1 basename .json` passes the file as the SUFFIX and prints
+          # ".json", which is what commit 2d765be is titled. The commit message
+          # is the evidence trail for which artifact was registered and when,
+          # so it has to name the model.
+          CARD=$(ls -t models/*.json | head -1)
+          git commit -m "Register $(basename "$CARD" .json)"
           git push
 
       - name: Surface the failure

@@ -248,3 +248,44 @@ def test_cumulative_incidence_never_falls_with_age(client: TestClient, fresh_db:
     at_48h = next(r for r in rows if r["age_seconds"] == 172800)
     assert at_48h["reverted_by"] == 5
     assert at_48h["at_risk"] == 20
+
+
+@pytest.mark.db
+def test_the_register_publishes_lag_as_a_distribution(client: TestClient, fresh_db: None) -> None:
+    """M3 D-4. This is a near-real-time system by choice (SRS 3.2), and a
+    median with a p90 and a maximum says what that means far better than a
+    target nobody meets."""
+    body = client.get("/register").json()
+    assert set(body["scoring_lag_minutes"]) == {"p50", "p90", "max"}
+    assert "count" in body["scored_after_outcome_was_observable"]
+
+
+@pytest.mark.db
+def test_the_register_reports_scores_written_after_their_outcome(
+    client: TestClient, fresh_db: None
+) -> None:
+    """M3 D-5. If the scorer falls far enough behind it would otherwise be
+    marked correct for having been slow — the one way this project could
+    improve its numbers by getting worse."""
+    from datetime import UTC, datetime, timedelta
+
+    from bellwether.db import connect
+
+    now = datetime(2026, 8, 14, 12, tzinfo=UTC)
+    with connect() as conn:
+        for revid, late in ((1, False), (2, True)):
+            conn.execute(
+                """
+                INSERT INTO register.predictions
+                    (revid, event_ts, scored_at, model_version, role, score,
+                     feature_hash, outcome_observable_at_scoring)
+                VALUES (%s, %s, %s, 'v1', 'champion', 0.5, 'h', %s)
+                """,
+                (revid, now, now + timedelta(minutes=20), late),
+            )
+
+    body = client.get("/register").json()
+    assert body["predictions"] == 2
+    assert body["scored_after_outcome_was_observable"]["count"] == 1
+    assert body["scored_after_outcome_was_observable"]["share"] == 0.5
+    assert body["scoring_lag_minutes"]["p50"] == 20.0

@@ -518,3 +518,97 @@ def kc2() -> dict[str, Any]:
             else "Final, against the estimated maturity window."
         ),
     }
+
+
+REGISTER_SQL = """
+SELECT count(*)                                                      AS predictions,
+       count(DISTINCT model_version)                                 AS model_versions,
+       count(*) FILTER (WHERE outcome_observable_at_scoring)         AS scored_late,
+       min(scored_at)                                                AS first_score,
+       max(scored_at)                                                AS latest_score,
+       round((percentile_cont(0.5) WITHIN GROUP (
+             ORDER BY EXTRACT(epoch FROM scored_at - event_ts)) / 60.0)::numeric, 1)
+                                                                     AS lag_p50_minutes,
+       round((percentile_cont(0.9) WITHIN GROUP (
+             ORDER BY EXTRACT(epoch FROM scored_at - event_ts)) / 60.0)::numeric, 1)
+                                                                     AS lag_p90_minutes,
+       round((max(EXTRACT(epoch FROM scored_at - event_ts)) / 60.0)::numeric, 1)
+                                                                     AS lag_max_minutes
+  FROM register.predictions
+"""
+
+CHAMPION_SQL = """
+SELECT model_version, trained_at, training_start, training_end, n_train_events,
+       n_train_positives, artifact_path, artifact_sha256, offline_metrics,
+       array_length(feature_names, 1) AS n_features, code_commit
+  FROM register.model_registry
+ ORDER BY trained_at DESC, model_version DESC
+ LIMIT 1
+"""
+
+
+@app.get("/register")
+def register_view() -> dict[str, Any]:
+    """The prediction register, and the model that wrote to it (M3 D-4, D-5).
+
+    Scoring lag is published as a DISTRIBUTION, not a target. This is a
+    near-real-time system by choice (SRS §3.2), and a median with a p90 and a
+    maximum says what that means far better than a number nobody meets.
+
+    `scored_late` counts predictions written after their own outcome was
+    already observable. Those are excluded from every accuracy claim: if the
+    scorer falls far enough behind it would otherwise be marked correct for
+    having been slow, which is the one way this project could improve its
+    numbers by getting worse.
+    """
+    with _connect() as conn:
+        totals = conn.execute(REGISTER_SQL).fetchone() or {}
+        champion = conn.execute(CHAMPION_SQL).fetchone()
+
+    scored = int(totals.get("predictions") or 0)
+    late = int(totals.get("scored_late") or 0)
+
+    def number(value: Any) -> float | None:
+        """Postgres numeric arrives as Decimal, which serialises to a JSON
+        STRING. A client parsing scoring_lag_minutes.p50 would get "20.0", and
+        would either coerce it silently or compare it as text. Numbers are
+        returned as numbers."""
+        return None if value is None else float(value)
+
+    return {
+        "predictions": scored,
+        "model_versions": totals.get("model_versions", 0),
+        "first_score": totals.get("first_score"),
+        "latest_score": totals.get("latest_score"),
+        "scoring_lag_minutes": {
+            "p50": number(totals.get("lag_p50_minutes")),
+            "p90": number(totals.get("lag_p90_minutes")),
+            "max": number(totals.get("lag_max_minutes")),
+        },
+        "scored_after_outcome_was_observable": {
+            "count": late,
+            "share": round(late / scored, 5) if scored else None,
+            "note": "excluded from every accuracy claim; see M3-FR-10",
+        },
+        "champion": (
+            None
+            if not champion
+            else {
+                "model_version": champion["model_version"],
+                "trained_at": champion["trained_at"],
+                "training_window": [champion["training_start"], champion["training_end"]],
+                "n_train_events": champion["n_train_events"],
+                "n_train_positives": champion["n_train_positives"],
+                "n_features": champion["n_features"],
+                "artifact_path": champion["artifact_path"],
+                "artifact_sha256": champion["artifact_sha256"],
+                "offline_metrics": champion["offline_metrics"],
+                "code_commit": champion["code_commit"],
+                "note": (
+                    "The artifact is in git at artifact_path. Its sha256 is "
+                    "verified before every load, so a mismatch refuses to score "
+                    "rather than scoring differently."
+                ),
+            }
+        ),
+    }
