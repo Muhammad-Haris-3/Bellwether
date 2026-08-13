@@ -10,6 +10,19 @@
 
 ## 1. The verdict
 
+> **Re-measured in M3 and still cleared.** These numbers were produced with
+> reverts folded into editor and page state at `revert_ts` — the moment a revert
+> happened, rather than the moment this system could have known of it. M3 found
+> that and closed it (commit `cd017df`), which changed the state every model
+> here was trained on, so the verdict was re-earned rather than assumed:
+> **margin +0.1072, CI [+0.0794, +0.1394]**, against the same required +0.0500.
+> The table below is left as it was measured. Live figures: `/kc2`.
+>
+> The re-run also answers a question this summary could not: `editor_edits_reverted`
+> and `page_edits_reverted`, the two features the leak actually touched, both
+> measure at **exactly 0.000 importance**. The leak was real and worth closing.
+> It moved nothing.
+
 **KC-2 is cleared. The project continues past M2.**
 
 | Scorer | PR-AUC |
