@@ -1,0 +1,11 @@
+# Normalise line endings to LF in the repository.
+#
+# The pipeline runs on Linux runners and the workflow files contain shell.
+# Without this, committing from Windows stores CRLF, and a `run:` block with
+# CRLF line endings fails on a GitHub runner with errors that point at the
+# script's contents rather than at its line endings — which is a bad hour.
+* text=auto eol=lf
+
+*.png binary
+*.pdf binary
+*.docx binary
