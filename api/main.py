@@ -100,6 +100,35 @@ SELECT sampling_stratum,
 """
 
 
+# What each migration is expected to have left behind.
+#
+# The pipeline deploys on every push; the schema is applied by hand through
+# bootstrap_database.py. So code can be ahead of the database, and the symptom
+# is a column that does not exist — reported by a failing job, in a log, some
+# time later. This makes the question "which migration does this database
+# actually have" answerable from outside, in one request.
+SCHEMA_EXPECTATIONS = {
+    "003_m1_frame": (
+        "SELECT to_regclass('landing.tag_names') IS NOT NULL"
+        "   AND EXISTS (SELECT 1 FROM information_schema.columns"
+        "                WHERE table_schema = 'landing' AND table_name = 'rc_events'"
+        "                  AND column_name = 'tag_ids')"
+        "   AND EXISTS (SELECT 1 FROM information_schema.columns"
+        "                WHERE table_schema = 'landing' AND table_name = 'rc_events'"
+        "                  AND column_name = 'in_maturity_cohort') AS present"
+    ),
+    "004_m1_gaps": ("SELECT to_regclass('landing.gap_attempts') IS NOT NULL AS present"),
+}
+
+
+def _schema_state(conn: psycopg.Connection[Any]) -> dict[str, bool]:
+    state: dict[str, bool] = {}
+    for name, sql in SCHEMA_EXPECTATIONS.items():
+        row = conn.execute(sql).fetchone()  # type: ignore[arg-type]
+        state[name] = bool(row and row["present"])
+    return state
+
+
 def _connect() -> psycopg.Connection[Any]:
     settings = get_settings()
     conn = psycopg.connect(settings.serving_url, row_factory=psycopg.rows.dict_row)
@@ -113,17 +142,25 @@ def health() -> dict[str, Any]:
     settings = get_settings()
     reachable = True
     detail: str | None = None
+    schema: dict[str, bool] = {}
     try:
         with _connect() as conn:
             conn.execute("SELECT 1")
+            schema = _schema_state(conn)
     except Exception as exc:  # noqa: BLE001
         reachable = False
         # The class name only. The message can contain the host, the user and,
         # on some drivers, the connection string itself.
         detail = type(exc).__name__
 
+    behind = [name for name, present in schema.items() if not present]
+
     return {
-        "status": "ok" if reachable else "degraded",
+        # A database missing a migration the deployed code depends on is not
+        # healthy, even though every query in this endpoint still works.
+        "status": "ok" if reachable and not behind else "degraded",
+        "schema": schema,
+        "schema_behind": behind,
         "env": settings.env,
         "env_is_valid": settings.env_is_valid,
         "build": settings.build_id,

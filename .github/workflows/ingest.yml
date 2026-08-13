@@ -66,6 +66,15 @@ jobs:
         if: always()
         run: python -m bellwether.label_secondary
 
+      # Runs after ingestion, and also when ingestion failed — a failed run is
+      # one of the ways a gap appears. Cheap when coverage is clean: a single
+      # window query that returns nothing and exits. It only spends API calls
+      # when there is a hole behind the cursor that an ordinary run cannot
+      # reach, because ordinary runs only ever move forward.
+      - name: Heal coverage gaps
+        if: always()
+        run: python -m bellwether.gapfill
+
       - name: Surface the failure
         if: failure()
         run: |

@@ -89,6 +89,30 @@ class Settings(BaseSettings):
     # than 50. M0 is measuring, not keeping up.
     max_label_checks_per_run: int = 6_000
 
+    # --- M1: retention and gap healing ------------------------------------
+    #
+    # Raw events age out at 30 days. Not 120, as SRS 6.5 assumed: measured at
+    # 372 bytes a row against Neon Free's 0.5 GB, 120 days permits about 9,000
+    # events a day, and the SRS's own frame kept 14,000. See M1 section 2.1.
+    raw_retention_days: int = 30
+
+    # A gap is a silence longer than this. At the M1 frame the pipeline keeps
+    # ~6.4 events a minute — a mean spacing near nine seconds, and 5/minute even
+    # in the quietest measured hour. Ten minutes of silence is absence, not
+    # thinning. Checked against the frame rather than carried over from before
+    # it cut volume by an order of magnitude.
+    gap_threshold_seconds: int = 600
+
+    # Attempts before a gap that yields nothing is called permanent and
+    # excluded from coverage claims (M1-FR-14).
+    gap_max_attempts: int = 3
+
+    # Beyond this age the wiki's own recentchanges table no longer holds the
+    # window, so no number of retries can recover it. Conservative: Wikimedia
+    # retains longer, and claiming a gap is permanent too early would hide a
+    # hole that was still fixable.
+    recentchanges_horizon_days: int = 25
+
     # How far back the secondary label path re-derives on each run. It costs no
     # API calls at all — it reads tags already ingested — so the window is
     # generous, and overlapping runs are absorbed by the unique constraint.
