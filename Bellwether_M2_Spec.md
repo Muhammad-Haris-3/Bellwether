@@ -129,6 +129,26 @@ is dead:
 | M2-FR-12 | The coverage of `editor_state` shall be measured and published — what fraction of scored events have any prior history at all, per stratum |
 | M2-FR-13 | If that coverage is below 10% for a stratum, history-derived features shall be reported as uninformative for it rather than included and left to look like signal |
 
+> **Measured 2026-08-14, and the concern above was wrong.** Coverage on framed
+> rows only — census rows excluded, because they were ingested at 100% and
+> would flatter the figure by about thirty points:
+>
+> | Stratum | Events with prior editor history |
+> |---|---|
+> | Logged out | **42.2%** |
+> | Registered | **50.0%** |
+>
+> Comfortably above the 10% threshold in both strata, so history features stay
+> in. The reasoning that predicted otherwise treated editors as
+> interchangeable; edit activity is in fact heavily concentrated, so even a 3%
+> sample catches prolific editors repeatedly — and prolific editors are most of
+> the events.
+>
+> This is a lower bound: it was measured over a few hours of framed data, and
+> coverage can only rise as history accumulates. The requirement stands anyway,
+> because the frame may change and the day it does this number should be
+> re-checked rather than remembered.
+
 ### 3.4 The candidate feature set
 
 Available from the event alone, with no extra request and no history:

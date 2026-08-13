@@ -112,9 +112,38 @@ EVENT_FEATURES: dict[str, FeatureFn] = {
     "weekday_cos": lambda e, h: math.cos(2 * math.pi * _weekday(e) / 7),
 }
 
-# History-derived features. Populated in M2-T2 once editor_state exists; the
-# guard already covers them, so they cannot be added without being checked.
-HISTORY_FEATURES: dict[str, FeatureFn] = {}
+
+def _days_since_first_seen(event: dict[str, Any], history: History) -> float:
+    first = history.get("editor_first_seen")
+    if not isinstance(first, datetime) or not isinstance(event.get("event_ts"), datetime):
+        return 0.0
+    return max((event["event_ts"] - first).total_seconds(), 0.0) / 86400.0
+
+
+# History-derived features, from state folded in strictly before this event.
+#
+# Read only through the keys `history_for` provides. A feature that reached into
+# the state dict directly could see activity from any time, and the guard's
+# future-activity probe would not catch it — the probe adds keys, it does not
+# police attribute access.
+HISTORY_FEATURES: dict[str, FeatureFn] = {
+    # Sparse for registered editors under a 3% frame, and measured rather than
+    # assumed (M2-FR-12). If coverage is below 10% for a stratum these are
+    # reported as uninformative rather than quietly included.
+    "editor_edits_seen": lambda e, h: float(h.get("editor_edits_seen", 0)),
+    "editor_is_new_to_us": lambda e, h: float(h.get("editor_edits_seen", 0) == 0),
+    "editor_days_known": _days_since_first_seen,
+    # The one editor signal observable for the WHOLE feed, because
+    # revert_events is recorded outside the sampling frame. Patrollers revert
+    # prolifically and are almost never reverted themselves, so this separates
+    # the people cleaning up from the people being cleaned up after.
+    "editor_reverts_performed": lambda e, h: float(h.get("editor_reverts_performed", 0)),
+    "editor_edits_reverted": lambda e, h: float(h.get("editor_edits_reverted", 0)),
+    # Page context. A page being edited repeatedly, or reverted on repeatedly,
+    # is a different risk from a quiet one.
+    "page_edits_seen": lambda e, h: float(h.get("page_edits_seen", 0)),
+    "page_edits_reverted": lambda e, h: float(h.get("page_edits_reverted", 0)),
+}
 
 
 def feature_names() -> list[str]:

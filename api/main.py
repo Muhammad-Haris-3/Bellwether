@@ -170,6 +170,13 @@ SCHEMA_EXPECTATIONS = {
     ),
     "004_m1_gaps": ("SELECT to_regclass('landing.gap_attempts') IS NOT NULL AS present"),
     "006_m1_revert_events": ("SELECT to_regclass('outcome.revert_events') IS NOT NULL AS present"),
+    "007_m2_state": (
+        "SELECT to_regclass('landing.editor_state') IS NOT NULL"
+        "   AND to_regclass('landing.page_state') IS NOT NULL"
+        "   AND EXISTS (SELECT 1 FROM information_schema.columns"
+        "                WHERE table_schema = 'outcome' AND table_name = 'revert_events'"
+        "                  AND column_name = 'revert_user_id') AS present"
+    ),
     "005_m1_retention": (
         "SELECT to_regclass('outcome.seals') IS NOT NULL"
         "   AND EXISTS (SELECT 1 FROM pg_proc p"
