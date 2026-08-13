@@ -87,6 +87,7 @@ Finding those in week one is what M0 is for.
 | [Bellwether_M0_Summary.md](Bellwether_M0_Summary.md) | What M0 cost: four findings that changed the design, and ten bugs |
 | [Bellwether_M1_Spec.md](Bellwether_M1_Spec.md) | The storage budget, the sampling frame, and a requirement withdrawn rather than built |
 | [Bellwether_M1_Summary.md](Bellwether_M1_Summary.md) | What M1 measured, including two contradictory clauses in the SRS |
+| [Bellwether_M2_Spec.md](Bellwether_M2_Spec.md) | The maturity window, the leakage traps, and the criterion that can end the project |
 | [PREREGISTRATION.md](PREREGISTRATION.md) | The promotion rule, fixed before any model existed |
 
 ## Local setup
