@@ -170,6 +170,7 @@ SCHEMA_EXPECTATIONS = {
     ),
     "004_m1_gaps": ("SELECT to_regclass('landing.gap_attempts') IS NOT NULL AS present"),
     "006_m1_revert_events": ("SELECT to_regclass('outcome.revert_events') IS NOT NULL AS present"),
+    "008_m2_evaluations": ("SELECT to_regclass('outcome.evaluations') IS NOT NULL AS present"),
     "007_m2_state": (
         "SELECT to_regclass('landing.editor_state') IS NOT NULL"
         "   AND to_regclass('landing.page_state') IS NOT NULL"
@@ -450,5 +451,45 @@ def maturity() -> dict[str, Any]:
             "age. Backfilled events were observed once, late, so they attribute "
             "three days of accumulated reverts to a single observation and "
             "cannot separate when a revert arrived from when we looked."
+        ),
+    }
+
+
+@app.get("/kc2")
+def kc2() -> dict[str, Any]:
+    """The kill criterion, answered in public (M2 C-8).
+
+    A criterion decided in a job log that needs a login to read is not a
+    criterion; it is a private opinion with a number attached. Every evaluation
+    appends a row, nothing may replace one, and this serves the latest.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM outcome.evaluations ORDER BY evaluated_at DESC LIMIT 1"
+        ).fetchone()
+
+    if not row:
+        return {"decided": False, "note": "no evaluation has been run yet"}
+
+    return {
+        "decided": True,
+        "clears_kc2": row["clears_kc2"],
+        "provisional": row["provisional"],
+        "margin": row["margin"],
+        "margin_required": row["margin_required"],
+        "ci": [row["ci_low"], row["ci_high"]],
+        "pr_auc": row["pr_auc"],
+        "evaluated_at": row["evaluated_at"],
+        "window": [row["window_start"], row["window_end"]],
+        "maturity_hours": row["maturity_hours"],
+        "n_events": row["n_events"],
+        "n_positives": row["n_positives"],
+        "n_features": row["n_features"],
+        "code_commit": row["code_commit"],
+        "note": (
+            "PROVISIONAL while maturity is fixed at 48h. The real window needs "
+            "the maturity cohort to age; see /maturity."
+            if row["provisional"]
+            else "Final, against the estimated maturity window."
         ),
     }

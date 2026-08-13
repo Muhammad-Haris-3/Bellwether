@@ -1,0 +1,66 @@
+name: Evaluate
+
+# Manual only. This is not maintenance — it is the milestone's decision
+# procedure, and running it on a timer would invite quietly re-rolling until a
+# result looked better. Every run appends a row that nothing can replace.
+on:
+  workflow_dispatch:
+    inputs:
+      window_start:
+        description: "Evaluation window start, ISO 8601"
+        required: true
+        default: "2026-08-10T00:00:00Z"
+      window_end:
+        description: "Evaluation window end, ISO 8601"
+        required: true
+        default: "2026-08-11T00:00:00Z"
+      folds:
+        description: "Rolling-origin folds"
+        required: false
+        default: "4"
+
+concurrency:
+  group: evaluate
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    name: Baselines, model, KC-2
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      BELLWETHER_DATABASE_URL: ${{ secrets.BELLWETHER_DATABASE_URL }}
+      BELLWETHER_ENV: production
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      # numpy and scikit-learn live in the dev requirements, not the pipeline
+      # ones — the scheduled jobs have no business carrying a model library.
+      - name: Install
+        run: pip install -r requirements-pipeline.txt numpy==2.5.2 scikit-learn==1.9.0
+
+      # Before anything is trained. A leaky feature produces a model that
+      # scores beautifully and is worthless, and the point of KC-2 is to find
+      # out whether there is signal — not whether there is a leak.
+      - name: Knowability guard
+        run: python -m bellwether.knowability
+
+      - name: Evaluate
+        run: |
+          python -m bellwether.evaluate \
+            --from "${{ inputs.window_start }}" \
+            --to   "${{ inputs.window_end }}" \
+            --folds "${{ inputs.folds }}"
+
+      - name: Where to read the verdict
+        if: always()
+        run: |
+          echo "::notice title=KC-2::Result appended to outcome.evaluations and \
+          served publicly at /kc2. Nothing can replace the row."
