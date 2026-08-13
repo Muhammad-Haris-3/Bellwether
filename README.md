@@ -84,6 +84,10 @@ Finding those in week one is what M0 is for.
 |---|---|
 | [Bellwether_SRS_v1.0.md](Bellwether_SRS_v1.0.md) | Requirements, feasibility, risks, acceptance criteria |
 | [Bellwether_M0_Spec.md](Bellwether_M0_Spec.md) | The milestone spec, its kill criterion, and what it must not become |
+| [Bellwether_M0_Summary.md](Bellwether_M0_Summary.md) | What M0 cost: four findings that changed the design, and ten bugs |
+| [Bellwether_M1_Spec.md](Bellwether_M1_Spec.md) | The storage budget, the sampling frame, and a requirement withdrawn rather than built |
+| [Bellwether_M1_Summary.md](Bellwether_M1_Summary.md) | What M1 measured, including two contradictory clauses in the SRS |
+| [PREREGISTRATION.md](PREREGISTRATION.md) | The promotion rule, fixed before any model existed |
 
 ## Local setup
 

@@ -2,7 +2,7 @@
 
 **Milestone:** M1 — Durable ingestion within a fixed storage budget
 **Date:** 2026-08-13
-**Status:** Not started
+**Status:** Build complete — see `Bellwether_M1_Summary.md`
 **Depends on:** `Bellwether_SRS_v1.0.md`, `Bellwether_M0_Summary.md`
 
 ---
