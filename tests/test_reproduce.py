@@ -133,41 +133,47 @@ def test_a_prediction_that_cannot_be_re_derived_fails_loudly(
 
 
 @pytest.mark.db
-def test_a_revert_learned_between_the_edit_and_its_scoring_is_diagnosed(
+def test_a_revert_folded_in_before_scoring_is_reproduced(
     fresh_db: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The distinction the second hash exists to draw.
+    """Reverts enter the counters when apply_reverts wrote them.
 
-    The scorer reads persisted state as of the moment it runs, not as of the
-    edit. A revert discovered in between is in its view and not in training's,
-    so the hash will not match under the training-time definition — and that is
-    a measurable statement about train/serve skew, not an unreproducible
-    prediction.
+    So a batch scored after that moment reads the revert and a batch scored
+    before does not, and the reproduction has to fold on the same boundary. Not
+    on when the revert happened, and not on when it was discovered — on when it
+    reached the table the scorer reads.
     """
     monkeypatch.setattr(registry, "MODELS_DIR", tmp_path)
-    path = tmp_path / "champion-skew.pkl"
+    path = tmp_path / "champion-fold.pkl"
     path.write_bytes(pickle.dumps(ConstantModel(), protocol=5))
     digest = registry.artifact_sha256(path)
 
     revid = next(r for r in range(100, 5_000) if reproduce.sampled(r))
 
     with connect() as conn:
-        _register(conn, "champion-skew", digest)
-        # An earlier edit by the same author, reverted, and discovered only
-        # AFTER the edit we are about to check was made.
+        _register(conn, "champion-fold", digest)
         _event(conn, revid - 1, minutes_ago=300)
         _event(conn, revid, minutes_ago=200)
+
+        # The earlier edit's revert reached the counters an hour before the
+        # later edit was scored, so the scorer saw it.
+        conn.execute(
+            "INSERT INTO landing.state_applied_reverts (revid, applied_at_utc) "
+            "VALUES (%s, now() - make_interval(mins => 60))",
+            (revid - 1,),
+        )
         conn.execute(
             """
-            INSERT INTO outcome.revert_events
-                (revert_revid, reverted_revid, revert_ts, method, observed_at_utc)
-            VALUES (%s, %s, now() - make_interval(mins => 250), 'mw-undo',
-                    now() - make_interval(mins => 100))
+            INSERT INTO register.predictions
+                (revid, event_ts, scored_at, model_version, role, score,
+                 feature_hash, outcome_observable_at_scoring)
+            SELECT revid, event_ts, now() - make_interval(mins => 30),
+                   'champion-fold', 'champion', 0.7, 'placeholder', false
+              FROM landing.rc_events WHERE revid = %s
             """,
-            (revid + 5_000, revid - 1),
+            (revid - 1,),
         )
 
-        # The hash the scorer would have written, having seen that revert.
         event = conn.execute(
             "SELECT e.revid, e.old_revid, e.event_ts, e.ns, e.title, e.user_name, "
             "e.user_id, e.is_anon, e.is_temp, e.is_minor, e.is_bot, e.comment, "
@@ -175,45 +181,43 @@ def test_a_revert_learned_between_the_edit_and_its_scoring_is_diagnosed(
             "FROM landing.rc_events e WHERE e.revid = %s",
             (revid,),
         ).fetchone()
+        first = conn.execute(
+            "SELECT event_ts FROM landing.rc_events WHERE revid = %s", (revid - 1,)
+        ).fetchone()
+
         history = dict(state.EMPTY)
         history["event_ts"] = event["event_ts"]
         history["editor_edits_seen"] = 1
         history["page_edits_seen"] = 1
-        history["editor_first_seen"] = event["event_ts"] - timedelta(minutes=100)
+        history["editor_first_seen"] = first["event_ts"]
         history["max_user_id_seen"] = 500
         history["editor_edits_reverted"] = 1
         history["page_edits_reverted"] = 1
-        late_hash = features.feature_hash(features.build(event, history))
 
         conn.execute(
             """
             INSERT INTO register.predictions
                 (revid, event_ts, scored_at, model_version, role, score,
                  feature_hash, outcome_observable_at_scoring)
-            VALUES (%s, %s, now(), 'champion-skew', 'champion', 0.7, %s, false)
+            VALUES (%s, %s, now(), 'champion-fold', 'champion', 0.7, %s, false)
             """,
-            (revid, event["event_ts"], late_hash),
+            (revid, event["event_ts"], features.feature_hash(features.build(event, history))),
         )
 
     result = reproduce.run(days=2)
-    assert result["unreproducible"] == 0, "it IS reproducible, under the scorer's definition"
-    assert result["matched_at_scoring_time"] == 1
-    assert result["hash_matched"] == 0
+    assert result["unreproducible"] == 0
+    assert result["hash_matched"] == 1
 
 
 @pytest.mark.db
 def test_state_built_before_the_window_is_out_of_scope_not_a_failure(
     fresh_db: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The first production run's 5 failures, reproduced as a test.
-
-    The job replayed only the window it was checking, so an editor first seen
-    earlier carried persisted state the pass could never see. That prediction
-    did not fail to reproduce — the run had no business claiming to have
-    checked it, and the two are published separately because a job that
-    silently drops what it cannot verify reports a clean rate over a shrinking
-    denominator.
-    """
+    """A prediction whose editor was already carrying state when the replay
+    begins is not a prediction that fails to reproduce. It is one the run had
+    no business claiming to have checked, and the two are published separately
+    because a job that silently drops what it cannot verify reports a clean
+    rate over a shrinking denominator."""
     monkeypatch.setattr(registry, "MODELS_DIR", tmp_path)
     path = tmp_path / "champion-scope.pkl"
     path.write_bytes(pickle.dumps(ConstantModel(), protocol=5))
@@ -223,7 +227,6 @@ def test_state_built_before_the_window_is_out_of_scope_not_a_failure(
 
     with connect() as conn:
         _register(conn, "champion-scope", digest)
-        # Alice edited long before the replay window opens.
         conn.execute(
             """
             INSERT INTO landing.rc_events
@@ -232,6 +235,18 @@ def test_state_built_before_the_window_is_out_of_scope_not_a_failure(
                  sampling_weight, ingested_at_utc)
             VALUES (%s, now() - make_interval(days => 20), 0, 'Page', 'Alice', 500,
                     false, false, false, false, 100, 120, '{}', 'registered', 33.3, now())
+            """,
+            (revid - 1,),
+        )
+        # Scored twenty days ago, so its contribution to Alice's state is
+        # already baked in before any seven-day replay opens.
+        conn.execute(
+            """
+            INSERT INTO register.predictions
+                (revid, event_ts, scored_at, model_version, role, score,
+                 feature_hash, outcome_observable_at_scoring)
+            VALUES (%s, now() - make_interval(days => 20), now() - make_interval(days => 20),
+                    'champion-scope', 'champion', 0.7, 'placeholder', false)
             """,
             (revid - 1,),
         )
@@ -247,7 +262,6 @@ def test_state_built_before_the_window_is_out_of_scope_not_a_failure(
             (revid, "a" * 64),
         )
 
-    # A seven-day replay cannot see the 20-day-old edit that built Alice's state.
     result = reproduce.run(days=2, history_days=7)
     assert result["state_predates_window"] == 1
     assert result["unreproducible"] == 0

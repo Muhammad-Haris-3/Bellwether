@@ -45,46 +45,43 @@ REPRODUCE_LOCK_KEY = 815_009
 _SAMPLE_SALT = "bellwether/reproduce/v1"
 SAMPLE_PERCENT = 5
 
-# The columns features.build reads, plus what the fold needs. Deliberately the
-# same shape score.py selects: a reproduction that reads different columns is
-# not a reproduction.
-# Whether anything by this editor, or on this page, happened before the replay
-# window began. If so, the persisted state the scorer read includes events this
-# pass cannot see, and the prediction is out of scope rather than wrong.
-PREDATES_SQL = """
-SELECT EXISTS (
-    SELECT 1 FROM landing.rc_events e
-     WHERE (e.user_name = %(user_name)s OR e.title = %(title)s)
-       AND e.event_ts < %(history_start)s
-) AS predates
-"""
-
-REPLAY_SQL = f"""
+# Exactly what the scorer folded, in exactly the order it folded it.
+#
+# Not a time window over rc_events. The scorer's state is built from the events
+# it has SCORED — its lookback bounds that set, and a backfill outside the
+# lookback is never folded at all. Replaying every event in a window instead
+# folds history the scorer never had, which is how a 30-day replay scored worse
+# than a 2-day one: the wider it reached, the more it invented.
+#
+# The order is (scored_at, event_ts, revid). Each run stamps one scored_at
+# across its whole batch and folds within the batch in event_ts order, so this
+# tuple is the fold order, not an approximation of it.
+REPLAY_SQL = """
 SELECT e.revid, e.old_revid, e.event_ts, e.ns, e.title, e.user_name, e.user_id,
        e.is_anon, e.is_temp, e.is_minor, e.is_bot, e.comment, e.comment_hidden,
        e.oldlen, e.newlen, e.tags, e.sampling_stratum,
        (e.tags && ARRAY['mw-undo','mw-rollback','mw-manual-revert']) AS is_reverting,
-       {state.KNOWN_AT_SQL} AS reverted_known_at,
-       p.feature_hash, p.score, p.model_version, p.scored_at
-  FROM landing.rc_events e
-  LEFT JOIN register.predictions p
-         ON p.revid = e.revid AND p.role = 'champion'
- WHERE e.event_ts >= %(window_start)s
-   AND e.event_ts <  %(window_end)s
- ORDER BY e.event_ts, e.revid
+       p.feature_hash, p.score, p.model_version, p.scored_at,
+       a.applied_at_utc AS revert_applied_at
+  FROM register.predictions p
+  JOIN landing.rc_events e ON e.revid = p.revid
+  LEFT JOIN landing.state_applied_reverts a ON a.revid = e.revid
+ WHERE p.role = 'champion'
+   AND p.scored_at >= %(history_start)s
+ ORDER BY p.scored_at, e.event_ts, e.revid
 """
 
-# Reverts of this editor's or this page's earlier edits that became known
-# AFTER the edit was made but BEFORE it was scored. Exactly the rows that
-# separate the two definitions of state.
-LATE_KNOWLEDGE_SQL = f"""
-SELECT count(*) FILTER (WHERE e.user_name = %(user_name)s) AS editor_extra,
-       count(*) FILTER (WHERE e.title     = %(title)s)     AS page_extra
-  FROM landing.rc_events e
- WHERE (e.user_name = %(user_name)s OR e.title = %(title)s)
-   AND e.event_ts < %(event_ts)s
-   AND {state.KNOWN_AT_SQL} >  %(event_ts)s
-   AND {state.KNOWN_AT_SQL} <= %(scored_at)s
+# Was this editor or page already carrying state before the replay begins?
+# Judged on what was SCORED, for the same reason as above.
+PREDATES_SQL = """
+SELECT EXISTS (
+    SELECT 1
+      FROM register.predictions p
+      JOIN landing.rc_events e ON e.revid = p.revid
+     WHERE (e.user_name = %(user_name)s OR e.title = %(title)s)
+       AND p.role = 'champion'
+       AND p.scored_at < %(history_start)s
+) AS predates
 """
 
 MODEL_SQL = """
@@ -156,7 +153,7 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT, history_days: int = 30)
 
         with RunContext(run_id, job=JOB, window_from=window_start, window_to=window_end) as ctx:
             with connect() as conn, conn.cursor() as cur:
-                cur.execute(REPLAY_SQL, {"window_start": history_start, "window_end": window_end})
+                cur.execute(REPLAY_SQL, {"history_start": history_start})
                 events = cur.fetchall()
 
             names = features.feature_names()
@@ -165,52 +162,53 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT, history_days: int = 30)
             checks: list[dict[str, Any]] = []
 
             for event in events:
-                now = event["event_ts"]
+                # A revert enters the persisted counters when apply_reverts
+                # wrote it, so any batch scored after that moment reads it and
+                # any batch scored before does not.
                 still = []
-                for known_at, reverted in pending:
-                    if known_at <= now:
+                for applied_at, reverted in pending:
+                    if applied_at <= event["scored_at"]:
                         state.observe_revert(st, reverted)
                     else:
-                        still.append((known_at, reverted))
+                        still.append((applied_at, reverted))
                 pending = still
 
-                if (
-                    event["feature_hash"] is not None
-                    and event["event_ts"] >= window_start
-                    and sampled(event["revid"], percent)
-                ):
+                if sampled(event["revid"], percent) and event["event_ts"] >= window_start:
                     history = state.history_for(st, event)
                     vector = features.build(event, history)
                     checks.append({"event": event, "history": history, "vector": vector})
 
                 state.observe(st, event)
-                if event["reverted_known_at"] is not None:
-                    pending.append((event["reverted_known_at"], event))
+                if event["revert_applied_at"] is not None:
+                    pending.append((event["revert_applied_at"], event))
 
             versions = {c["event"]["model_version"] for c in checks}
             with connect() as conn:
                 models = _load_models(conn, versions)
 
-                hash_matched = score_matched = late_matched = unreproducible = 0
-                out_of_scope = 0
+                hash_matched = score_matched = unreproducible = out_of_scope = 0
+                # Retained at zero. The column exists because an earlier version
+                # rebuilt each mismatch a second time with the reverts the
+                # scorer had learned late; folding reverts by the moment
+                # apply_reverts wrote them makes that variant the primary path
+                # rather than an alternative to it. Older rows still carry
+                # meaning, so the column is not dropped.
+                late_matched = 0
                 for check in checks:
                     event, vector = check["event"], check["vector"]
+                    matched_vector: dict[str, Any] | None = None
                     if features.feature_hash(vector) == event["feature_hash"]:
                         hash_matched += 1
-                        matched_vector: dict[str, Any] | None = vector
+                        matched_vector = vector
+                    elif _predates(conn, event, history_start):
+                        # The scorer read state built from events scored before
+                        # this pass begins. Not a prediction that fails to
+                        # reproduce — one this run cannot claim to have checked,
+                        # and saying so is the difference between a rate and a
+                        # rate over a shrinking denominator.
+                        out_of_scope += 1
                     else:
-                        matched_vector = _try_at_scoring_time(conn, check, names)
-                        if matched_vector is not None:
-                            late_matched += 1
-                        elif _predates(conn, event, history_start):
-                            # The scorer read state built from events this pass
-                            # never saw. Not a prediction that fails to
-                            # reproduce — one this run cannot claim to have
-                            # checked, and saying so is the difference between
-                            # a rate and a rate over a shrinking denominator.
-                            out_of_scope += 1
-                        else:
-                            unreproducible += 1
+                        unreproducible += 1
 
                     model = models.get(event["model_version"])
                     if matched_vector is not None and model is not None:
@@ -283,38 +281,6 @@ def _predates(conn: Any, event: dict[str, Any], history_start: datetime) -> bool
         )
         row = cur.fetchone()
     return bool(row and row["predates"])
-
-
-def _try_at_scoring_time(
-    conn: Any, check: dict[str, Any], names: list[str]
-) -> dict[str, Any] | None:
-    """Rebuild the vector with what the SCORER knew, not what training would.
-
-    The scorer reads persisted state as of the moment it runs, so any revert
-    discovered between the edit and its scoring is in its view and not in the
-    training-time one. Folding those two counters in is the whole difference.
-    """
-    event, history = check["event"], check["history"]
-    if event["scored_at"] is None:
-        return None
-
-    with conn.cursor() as cur:
-        cur.execute(
-            LATE_KNOWLEDGE_SQL,
-            {
-                "user_name": event["user_name"],
-                "title": event["title"],
-                "event_ts": event["event_ts"],
-                "scored_at": event["scored_at"],
-            },
-        )
-        extra = cur.fetchone() or {}
-
-    adjusted = dict(history)
-    adjusted["editor_edits_reverted"] += int(extra.get("editor_extra") or 0)
-    adjusted["page_edits_reverted"] += int(extra.get("page_extra") or 0)
-    vector = features.build(event, adjusted)
-    return vector if features.feature_hash(vector) == event["feature_hash"] else None
 
 
 def main() -> int:
