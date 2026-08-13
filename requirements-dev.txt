@@ -1,4 +1,12 @@
 -r requirements-pipeline.txt
+# The API is tested too, so the dev environment needs what it runs on.
+#
+# This is not a hole in the separation: the SERVING image installs
+# requirements-serve.txt alone, and tests assert both that the file excludes
+# the HTTP client and that the Dockerfile installs nothing else. Omitting this
+# line is what made CI fail with ModuleNotFoundError on fastapi while the local
+# environment passed — because the local one had it installed by hand.
+-r requirements-serve.txt
 
 pytest==8.4.1
 pyyaml==6.0.2
