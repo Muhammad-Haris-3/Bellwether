@@ -19,6 +19,7 @@ SCHEDULED = {
     "ingest.yml": "*/10 * * * *",
     "label.yml": "*/30 * * * *",
     "maintain.yml": "17 3 * * *",
+    "reconcile.yml": "23 4 * * *",
 }
 
 

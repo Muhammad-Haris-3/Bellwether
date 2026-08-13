@@ -1,0 +1,70 @@
+name: Reconcile
+
+# Daily.
+#
+# Replays the last seven days and asserts that it reproduces the state the
+# online path persisted, one ten-minute batch at a time (M3-FR-12).
+#
+# This workflow is EXPECTED to go red when they disagree. That is the
+# requirement, not a defect in the workflow: M3-FR-13 forbids quietly
+# correcting drift, because a job that heals itself overnight removes the only
+# signal that something is causing it. A red run here means the state feeding
+# live predictions is not what a replay would produce, and every score written
+# since is suspect.
+#
+# Repair is available, and only by hand. Someone has to look at what diverged
+# and decide, which is the whole point.
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Replay window in days (must stay under the 30-day raw retention)"
+        required: false
+        default: "7"
+      repair:
+        description: "Overwrite persisted state with the replay. Deliberate act."
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Replay and compare
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      BELLWETHER_DATABASE_URL: ${{ secrets.BELLWETHER_DATABASE_URL }}
+      BELLWETHER_ENV: production
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements-pipeline.txt
+
+      - name: Replay and compare
+        run: |
+          set -o pipefail
+          python -m bellwether.reconcile \
+            --days "${{ inputs.days || '7' }}" \
+            ${{ inputs.repair == true && '--repair' || '' }} 2>&1 | tee reconcile-output.txt
+
+      - name: Surface the divergence
+        if: failure()
+        run: |
+          DETAIL=$(tail -40 reconcile-output.txt 2>/dev/null \
+            | sed 's/%/%25/g; s/\r//g' \
+            | awk '{printf "%s%%0A", $0}')
+          echo "::error title=state diverged::$DETAIL"
