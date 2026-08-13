@@ -264,6 +264,14 @@ SELECT g.checkpoint_seconds,
            WHERE p.first_positive_age IS NOT NULL
              AND p.first_positive_age <= g.checkpoint_seconds
        ) AS reverted_by,
+       -- Events actually OBSERVED at or beyond this age, positive or not.
+       --
+       -- Cumulative incidence is only defined where negatives have been seen
+       -- at that age. Beyond the observation horizon a positive stays known
+       -- forever while a negative needs a fresh look, so at_risk collapses to
+       -- the positives alone and the rate reads 100% — which is what the
+       -- 168-hour row said before this column existed to explain it.
+       count(*) FILTER (WHERE p.last_observed_age >= g.checkpoint_seconds) AS observed_at_age,
        count(*) FILTER (WHERE p.cohort) AS cohort_rows
   FROM grid g
  CROSS JOIN per_event p
@@ -418,13 +426,29 @@ def maturity() -> dict[str, Any]:
                 "cumulative_incidence": (
                     round(row["reverted_by"] / row["at_risk"], 5) if row["at_risk"] else None
                 ),
+                "observed_at_age": row["observed_at_age"],
+                # A rate computed where almost nothing was observed at that age
+                # is arithmetic, not measurement. 100 is a floor, not a claim
+                # that 100 is enough.
+                "reliable": row["observed_at_age"] >= 100,
                 "cohort_rows": row["cohort_rows"],
             }
             for row in rows
         ],
         "note": (
-            "Cumulative incidence, not a per-checkpoint rate. An event reverted "
-            "by one hour is still reverted at six, but is no longer re-checked, "
-            "so per-checkpoint tallies under-count later ages."
+            "Cumulative incidence by the age an observation was actually made, "
+            "not by the checkpoint it was scheduled under. Rows with "
+            "reliable=false have too few observations at that age for the rate "
+            "to mean anything: beyond the observation horizon a positive stays "
+            "known while a negative needs a fresh look, so the denominator "
+            "collapses to the positives and the rate tends to 100%."
+        ),
+        "window_set": False,
+        "window_blocked_on": (
+            "A clean estimate needs the maturity cohort — events ingested live "
+            "under the sampling frame and observed at every checkpoint as they "
+            "age. Backfilled events were observed once, late, so they attribute "
+            "three days of accumulated reverts to a single observation and "
+            "cannot separate when a revert arrived from when we looked."
         ),
     }
