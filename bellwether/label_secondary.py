@@ -38,7 +38,6 @@ from typing import Any
 
 from bellwether.config import get_settings
 from bellwether.db import advisory_lock, connect
-from bellwether.mediawiki import REVERTING_TAGS
 from bellwether.runlog import RunContext, new_run_id
 
 JOB = "label_secondary"
@@ -60,11 +59,14 @@ UNDO_PATTERN = re.compile(
 )
 
 REVERTING_EDITS_SQL = """
-SELECT revid, old_revid, event_ts, ingested_at_utc, comment, tags
-  FROM landing.rc_events
- WHERE tags && %(revert_tags)s::text[]
-   AND event_ts >= now() - make_interval(hours => %(lookback_hours)s)
- ORDER BY event_ts
+SELECT revert_revid AS revid,
+       reverted_revid,
+       revert_ts    AS event_ts,
+       observed_at_utc AS ingested_at_utc,
+       method
+  FROM outcome.revert_events
+ WHERE revert_ts >= now() - make_interval(hours => %(lookback_hours)s)
+ ORDER BY revert_ts
 """
 
 INSERT_LABEL_SQL = """
@@ -120,10 +122,7 @@ def run(*, lookback_hours: int | None = None) -> dict[str, Any]:
 
         with RunContext(run_id, job=JOB) as run_ctx, connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    REVERTING_EDITS_SQL,
-                    {"revert_tags": list(REVERTING_TAGS), "lookback_hours": lookback},
-                )
+                cur.execute(REVERTING_EDITS_SQL, {"lookback_hours": lookback})
                 reverting = cur.fetchall()
 
             underivable = 0
@@ -131,7 +130,11 @@ def run(*, lookback_hours: int | None = None) -> dict[str, Any]:
 
             with conn.cursor() as cur:
                 for edit in reverting:
-                    target = reverted_revid_for(edit)
+                    # Targets are derived once, at ingestion, and stored. The
+                    # parse used to happen here, over rc_events — which the
+                    # sampling frame had just made blind to 94 per cent of
+                    # reverting edits without changing a line of this file.
+                    target = edit["reverted_revid"]
                     if target is None:
                         underivable += 1
                         continue

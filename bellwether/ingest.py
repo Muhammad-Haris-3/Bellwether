@@ -30,7 +30,7 @@ from bellwether import frame
 from bellwether.config import get_settings
 from bellwether.db import advisory_lock, connect
 from bellwether.http import MediaWikiClient
-from bellwether.mediawiki import iter_recent_changes
+from bellwether.mediawiki import REVERTING_TAGS, iter_recent_changes
 from bellwether.runlog import RunContext, new_run_id, utcnow
 
 JOB = "ingest"
@@ -55,6 +55,53 @@ INSERT INTO landing.rc_events (
 )
 ON CONFLICT (revid) DO NOTHING
 """
+
+
+INSERT_REVERT_SQL = """
+INSERT INTO outcome.revert_events
+    (revert_revid, reverted_revid, revert_ts, method, observed_by_run)
+VALUES (%(revert_revid)s, %(reverted_revid)s, %(revert_ts)s, %(method)s, %(run_id)s)
+ON CONFLICT (revert_revid) DO NOTHING
+"""
+
+
+def record_reverts(conn: Any, events: list[dict[str, Any]], run_id: Any) -> int:
+    """Record every reverting edit in the page, ignoring the sampling frame.
+
+    Called with the WHOLE page, before framing. The frame governs what the
+    project studies; it should never have governed what the project can observe
+    about outcomes, and until this existed it silently did — 93.8 per cent of
+    reverting edits are made by registered editors, whom the frame samples at
+    3 per cent.
+
+    Rows are narrow and inserted at most once per reverting edit. A target that
+    cannot be derived is skipped rather than guessed at.
+    """
+    from bellwether.label_secondary import reverted_revid_for
+
+    rows = []
+    for event in events:
+        if not (set(event.get("tags") or []) & REVERTING_TAGS):
+            continue
+        target = reverted_revid_for(event)
+        if target is None or target == event["revid"]:
+            continue
+        method = next(t for t in event["tags"] if t in REVERTING_TAGS)
+        rows.append(
+            {
+                "revert_revid": event["revid"],
+                "reverted_revid": target,
+                "revert_ts": event["event_ts"],
+                "method": method,
+                "run_id": run_id,
+            }
+        )
+
+    if not rows:
+        return 0
+    with conn.cursor() as cur:
+        cur.executemany(INSERT_REVERT_SQL, rows)
+        return max(cur.rowcount, 0)
 
 
 def ensure_tag_ids(conn: Any, names: set[str], cache: dict[str, int]) -> None:
@@ -173,6 +220,7 @@ def run(*, start_override: datetime | None = None, max_pages: int | None = None)
 
         tag_cache: dict[str, int] = {}
         sampled = 0
+        reverts = 0
 
         with RunContext(run_id, job=JOB, window_from=cursor) as run_ctx:
             newest = cursor
@@ -187,6 +235,8 @@ def run(*, start_override: datetime | None = None, max_pages: int | None = None)
                     # cursor. Doing it the other way round would lose a page on
                     # a crash between the two.
                     with connect() as conn:
+                        # The WHOLE page, deliberately. See record_reverts.
+                        reverts += record_reverts(conn, page, run_id)
                         written = insert_page(conn, keep, run_id, tag_cache)
                         page_newest = max(e["event_ts"] for e in page)
                         if page_newest > newest:
@@ -206,6 +256,7 @@ def run(*, start_override: datetime | None = None, max_pages: int | None = None)
                 "to": newest.isoformat(),
                 "seen": run_ctx.rows_read,
                 "sampled": sampled,
+                "reverts": reverts,
                 "written": run_ctx.rows_written,
                 "api_calls": run_ctx.api_calls,
             }
@@ -214,8 +265,8 @@ def run(*, start_override: datetime | None = None, max_pages: int | None = None)
     kept_pct = (100.0 * int(result["sampled"]) / seen) if seen else 0.0
     print(
         f"ingest: {seen} seen, {result['sampled']} sampled ({kept_pct:.1f}%), "
-        f"{result['written']} new, {result['api_calls']} API calls, "
-        f"cursor at {result['to']}"
+        f"{result['written']} new, {result['reverts']} revert events, "
+        f"{result['api_calls']} API calls, cursor at {result['to']}"
     )
     return result
 

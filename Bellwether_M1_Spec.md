@@ -205,20 +205,57 @@ behind the cursor.
 
 ---
 
-## 8. The cheaper label path
+## 8. The cheaper label path — withdrawn, and what replaced it
+
+> **M1-FR-15, FR-16 and FR-17 are withdrawn.** The arithmetic that justified
+> them was computed under M0's census and does not survive the frame in §3.
 
 VER-5 established that `recentchanges` re-polling returns tags applied after the
-edit — **500 revisions per request instead of 50**.
+edit, at 500 revisions per request instead of 50. Under M0's 100% ingestion that
+was a 50× saving. Under the M1 frame it is **nothing**:
+
+| | Window re-poll | `prop=revisions` |
+|---|---|---|
+| M0, 100% ingested | 180 req/day | 9,000 req/day |
+| **M1 frame, ~10% sampled** | **252 req/day** | **262 req/day** |
+
+A window contains the whole population, but only a tenth of it is ours. Fetching
+ten times more rows per request, to reach a tenth as many rows of interest,
+cancels exactly. Building a second retrieval path, a horizon fallback and an
+agreement study for a 4% saving would be work that looked like progress.
+
+The backlog M1-FR-15 was meant to solve is already solved: 5 checks on 100% of
+events became 1.4 checks on 10% of them — **9,000 requests a day down to 262**.
+The frame and the cohort did it.
+
+### 8.1 What the frame broke instead
+
+Measured on census data: **93.8% of reverting edits are made by registered
+editors**, whom the frame samples at 3%. The secondary label path derives
+outcomes from the reverting edit's own tags at zero API cost — and it reads
+`rc_events`, which the frame had just made blind to almost all of them.
+
+Its recall, 19% under a census, would have fallen to roughly **1%**. Nothing
+would have errored. A path that used to contribute labels would simply have
+stopped, and the published agreement figure between the two paths would have
+become meaningless while still being published.
+
+**The frame governs what the project studies. It must not govern what the
+project can observe about outcomes.**
 
 | # | Requirement |
 |---|---|
-| M1-FR-15 | The primary label harvest shall re-poll `recentchanges` by window |
-| M1-FR-16 | `prop=revisions` shall remain as the fallback for events older than the wiki's `recentchanges` horizon |
-| M1-FR-17 | Agreement between the two retrieval methods shall be measured before the cheaper one becomes primary |
+| M1-FR-15a | Reverting edits shall be recorded for the **whole feed**, outside the sampling frame, in a narrow append-only table |
+| M1-FR-16a | The revert target shall be derived once, at ingestion, and stored — not re-parsed from sampled rows |
+| M1-FR-17a | The secondary label path shall read from that table, so its recall is independent of the frame |
 
-M0 left `label_checks` at 30,072 while events passed 49,580 — the labeller is
-losing ground. The frame in §3 cuts the inflow by 90% and this cuts the cost per
-check by 90%.
+Cost: 3.86% of ~90,000 edits a day, at roughly 80 bytes, is about **25 MB over
+90 days** — under 7% of the budget.
+
+Verified live: 3,000 events seen, 249 sampled, **122 reverting edits recorded
+with 0 underivable targets**, and 20 free labels written for the sampled edits
+among their targets. Under the withdrawn design the same window would have
+surfaced about ten of those 122.
 
 ---
 
@@ -244,7 +281,7 @@ and a `*/10` schedule running closer to hourly.
 | B-4 | A deliberately introduced gap is detected and healed by the gap-fill job, not by the next ordinary run |
 | B-5 | The retention job deletes only what its dry run predicted, and nothing unsealed |
 | B-6 | A month is sealed, the seal committed, and a pruned month verifiable from git alone |
-| B-7 | The label path re-polls `recentchanges`, with measured agreement against `prop=revisions` before promotion to primary |
+| B-7 | Reverting edits are recorded outside the frame, and the secondary path's recall no longer depends on the sampling rate |
 | B-8 | `label_checks` stops falling behind: checks due, at the end of a day, are fewer than at its start |
 | B-9 | Storage is reported by the API and the projection is visible on the status page |
 

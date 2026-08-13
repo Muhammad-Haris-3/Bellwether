@@ -90,17 +90,29 @@ def _seed(conn: Any, revid: int, age_seconds: int, **kw: Any) -> None:
     )
 
 
+def _observe_revert(conn: Any, revert_revid: int, reverted_revid: int, age_seconds: int) -> None:
+    """Record a reverting edit the way ingestion now does.
+
+    Reverting edits are captured for the whole feed, outside the sampling
+    frame — 93.8% of them are made by registered editors, whom the frame
+    samples at 3%, so deriving them from rc_events would have made this path
+    blind to almost everything it exists to see.
+    """
+    conn.execute(
+        """
+        INSERT INTO outcome.revert_events
+            (revert_revid, reverted_revid, revert_ts, method)
+        VALUES (%s, %s, now() - make_interval(secs => %s), 'mw-rollback')
+        ON CONFLICT (revert_revid) DO NOTHING
+        """,
+        (revert_revid, reverted_revid, age_seconds),
+    )
+
+
 def test_a_rollback_labels_the_edit_it_reverted(fresh_db: None) -> None:
     with connect() as conn:
         _seed(conn, 100, age_seconds=7_200)  # the bad edit
-        _seed(
-            conn,
-            101,
-            age_seconds=3_600,
-            old_revid=100,
-            tags=["mw-rollback"],
-            comment="Reverted edits by Someone",
-        )
+        _observe_revert(conn, revert_revid=101, reverted_revid=100, age_seconds=3_600)
 
     result = run(lookback_hours=48)
     assert result["labels_written"] == 1
@@ -122,30 +134,17 @@ def test_a_revert_cannot_precede_what_it_reverts(fresh_db: None) -> None:
     produce a negative latency and a silently wrong label."""
     with connect() as conn:
         _seed(conn, 200, age_seconds=60)  # "reverted" edit is NEWER than the revert
-        _seed(
-            conn,
-            201,
-            age_seconds=3_600,
-            old_revid=999,
-            tags=["mw-undo"],
-            comment="Undo revision 200 by Someone",
-        )
+        _observe_revert(conn, revert_revid=201, reverted_revid=200, age_seconds=3_600)
 
     assert run(lookback_hours=48)["labels_written"] == 0
 
 
 def test_an_unseen_target_is_not_labelled(fresh_db: None) -> None:
-    """The reverted edit may sit outside our sampling frame or before our
-    history begins. Referential integrity, not silent fabrication."""
+    """Reverting edits are observed for the whole feed, so most of them point
+    at edits the frame did not sample. Those are recorded as revert events and
+    produce no label — there is nothing here to attach one to."""
     with connect() as conn:
-        _seed(
-            conn,
-            301,
-            age_seconds=3_600,
-            old_revid=300,
-            tags=["mw-rollback"],
-            comment="Reverted",
-        )
+        _observe_revert(conn, revert_revid=301, reverted_revid=300, age_seconds=3_600)
 
     assert run(lookback_hours=48)["labels_written"] == 0
 
@@ -153,7 +152,7 @@ def test_an_unseen_target_is_not_labelled(fresh_db: None) -> None:
 def test_the_run_is_idempotent(fresh_db: None) -> None:
     with connect() as conn:
         _seed(conn, 400, age_seconds=7_200)
-        _seed(conn, 401, age_seconds=3_600, old_revid=400, tags=["mw-rollback"], comment="rv")
+        _observe_revert(conn, revert_revid=401, reverted_revid=400, age_seconds=3_600)
 
     assert run(lookback_hours=48)["labels_written"] == 1
     assert run(lookback_hours=48)["labels_written"] == 0
@@ -164,6 +163,6 @@ def test_the_secondary_path_makes_no_api_calls(fresh_db: None) -> None:
     label the recent tail long before the primary path's grid reaches it."""
     with connect() as conn:
         _seed(conn, 500, age_seconds=7_200)
-        _seed(conn, 501, age_seconds=3_600, old_revid=500, tags=["mw-rollback"], comment="rv")
+        _observe_revert(conn, revert_revid=501, reverted_revid=500, age_seconds=3_600)
 
     assert run(lookback_hours=48)["api_calls"] == 0
