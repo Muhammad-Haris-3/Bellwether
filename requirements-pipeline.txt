@@ -1,0 +1,10 @@
+# Pipeline dependencies — GitHub Actions jobs only.
+#
+# Kept separate from the serving container's requirements. The API must not be
+# able to import the HTTP client or the ingestion modules, because the API runs
+# with a read-only database role and should not carry code that writes.
+httpx==0.28.1
+psycopg[binary]==3.2.9
+pydantic==2.11.7
+pydantic-settings==2.10.1
+tenacity==9.1.2

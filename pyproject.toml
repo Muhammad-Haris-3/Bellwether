@@ -1,0 +1,41 @@
+[project]
+name = "bellwether"
+version = "0.1.0"
+description = "A self-maintaining edit-triage service"
+requires-python = ">=3.11"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["bellwether*", "api*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "DTZ"]
+# DTZ is enabled deliberately. Every timestamp in this project is UTC-aware:
+# MediaWiki publishes UTC, GitHub Actions runners are UTC, and the label
+# maturity analysis in M2 subtracts timestamps that originate on three
+# different machines. A single naive datetime would corrupt a latency figure
+# silently rather than loudly, which is the worst way for it to go wrong.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# Put the repository root on sys.path. `python -m pytest` does this
+# automatically; the bare `pytest` console script does not, and the difference
+# shows up only in CI — as a green run that never imported the project.
+pythonpath = ["."]
+markers = [
+    "db: requires a live Postgres connection (set BELLWETHER_DATABASE_URL)",
+    "network: talks to the live MediaWiki API",
+]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+ignore_missing_imports = true
