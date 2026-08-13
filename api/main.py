@@ -219,31 +219,50 @@ SCHEMA_EXPECTATIONS = {
 # A cumulative incidence cannot fall. That impossibility is the only reason the
 # bug was caught, so it is now an assertion in the test suite rather than
 # something a reader has to notice.
+#   * Ages come from `age_seconds` — when the observation was ACTUALLY made —
+#     never from `checkpoint_seconds`, which is only the checkpoint the job was
+#     working through. Measured locally, checks nominally due at six hours were
+#     performed at eight. Worse, a backfilled event reaches several checkpoints
+#     at once and records its 72-hour status against all of them, including the
+#     one labelled "1h". That is what produced a curve nearly flat from 6h to
+#     24h and then jumping sixteen points at 48h — a shape no revert hazard has.
 MATURITY_SQL = """
 WITH per_event AS (
     SELECT c.revid,
-           max(c.checkpoint_seconds)                                   AS last_checked,
-           min(c.checkpoint_seconds) FILTER (WHERE c.had_reverted_tag) AS first_positive,
-           bool_or(c.in_maturity_cohort)                               AS cohort,
-           max(e.sampling_stratum)                                     AS stratum
+           max(c.age_seconds)                                   AS last_observed_age,
+           min(c.age_seconds) FILTER (WHERE c.had_reverted_tag) AS first_positive_age,
+           bool_or(c.in_maturity_cohort)                        AS cohort,
+           max(e.sampling_stratum)                              AS stratum
       FROM outcome.label_checks c
       LEFT JOIN landing.rc_events e ON e.revid = c.revid
      GROUP BY c.revid
 ),
-grid AS (SELECT DISTINCT checkpoint_seconds FROM outcome.label_checks)
+-- A fixed grid, not the checkpoints that happen to exist. The curve should be
+-- reported at the same ages whatever the scheduler was doing that week.
+grid AS (
+    SELECT unnest(ARRAY[3600, 10800, 21600, 43200, 86400, 172800, 259200, 604800]::bigint[])
+        AS checkpoint_seconds
+)
 SELECT g.checkpoint_seconds,
        COALESCE(p.stratum, 'unknown') AS stratum,
        -- KNOWN at this age: either observed negative at or beyond it, or
        -- already known positive before it. The second clause is the one whose
        -- absence produced a non-monotonic curve.
+       -- KNOWN at this age: observed at or beyond it, or already positive
+       -- before it. The second clause is the one whose absence produced a
+       -- non-monotonic curve the first time round.
        count(*) FILTER (
-           WHERE p.last_checked >= g.checkpoint_seconds
-              OR (p.first_positive IS NOT NULL
-                  AND p.first_positive <= g.checkpoint_seconds)
+           WHERE p.last_observed_age >= g.checkpoint_seconds
+              OR (p.first_positive_age IS NOT NULL
+                  AND p.first_positive_age <= g.checkpoint_seconds)
        ) AS at_risk,
+       -- An event first OBSERVED positive at 72 hours counts as reverted only
+       -- from 72 hours. We know it had been reverted by then, not when. Interval
+       -- censoring, resolved conservatively — the alternative is inventing a
+       -- revert time nobody measured.
        count(*) FILTER (
-           WHERE p.first_positive IS NOT NULL
-             AND p.first_positive <= g.checkpoint_seconds
+           WHERE p.first_positive_age IS NOT NULL
+             AND p.first_positive_age <= g.checkpoint_seconds
        ) AS reverted_by,
        count(*) FILTER (WHERE p.cohort) AS cohort_rows
   FROM grid g
