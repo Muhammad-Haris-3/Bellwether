@@ -169,29 +169,48 @@ SCHEMA_EXPECTATIONS = {
 #     incidence is therefore built from the FIRST checkpoint at which each
 #     event tested positive, not from per-checkpoint tallies.
 #
-#   * The denominator is events that actually reached that age, not all events.
-#     Counting a two-hour-old edit against the 48-hour checkpoint would treat
-#     "has not had time" as "was not reverted", which is precisely the
-#     right-censoring the whole maturity exercise exists to handle.
+#   * The denominator is events whose status at that age is KNOWN — observed
+#     negative at or beyond it, OR already known positive before it. Counting a
+#     two-hour-old edit against the 48-hour checkpoint would treat "has not had
+#     time" as "was not reverted", the right-censoring this exercise exists to
+#     handle.
+#
+# The first version of this query got the second point half right. It counted
+# only events observed at or beyond each age — and an event that tested
+# positive early is never checked again, so it dropped out of the denominator
+# at every later age while its revert dropped out of the numerator too. The
+# published curve read 10.62%, 1.36%, 0.76%, 21.27% across 1h, 6h, 24h, 48h.
+#
+# A cumulative incidence cannot fall. That impossibility is the only reason the
+# bug was caught, so it is now an assertion in the test suite rather than
+# something a reader has to notice.
 MATURITY_SQL = """
 WITH per_event AS (
     SELECT c.revid,
-           max(c.checkpoint_seconds)                                  AS reached,
+           max(c.checkpoint_seconds)                                   AS last_checked,
            min(c.checkpoint_seconds) FILTER (WHERE c.had_reverted_tag) AS first_positive,
-           bool_or(c.in_maturity_cohort)                              AS cohort,
-           max(e.sampling_stratum)                                    AS stratum
+           bool_or(c.in_maturity_cohort)                               AS cohort,
+           max(e.sampling_stratum)                                     AS stratum
       FROM outcome.label_checks c
       LEFT JOIN landing.rc_events e ON e.revid = c.revid
      GROUP BY c.revid
 ),
 grid AS (SELECT DISTINCT checkpoint_seconds FROM outcome.label_checks)
 SELECT g.checkpoint_seconds,
-       COALESCE(p.stratum, 'unknown')                        AS stratum,
-       count(*) FILTER (WHERE p.reached >= g.checkpoint_seconds)          AS at_risk,
-       count(*) FILTER (WHERE p.reached >= g.checkpoint_seconds
-                          AND p.first_positive IS NOT NULL
-                          AND p.first_positive <= g.checkpoint_seconds)   AS reverted_by,
-       count(*) FILTER (WHERE p.cohort)                                    AS cohort_rows
+       COALESCE(p.stratum, 'unknown') AS stratum,
+       -- KNOWN at this age: either observed negative at or beyond it, or
+       -- already known positive before it. The second clause is the one whose
+       -- absence produced a non-monotonic curve.
+       count(*) FILTER (
+           WHERE p.last_checked >= g.checkpoint_seconds
+              OR (p.first_positive IS NOT NULL
+                  AND p.first_positive <= g.checkpoint_seconds)
+       ) AS at_risk,
+       count(*) FILTER (
+           WHERE p.first_positive IS NOT NULL
+             AND p.first_positive <= g.checkpoint_seconds
+       ) AS reverted_by,
+       count(*) FILTER (WHERE p.cohort) AS cohort_rows
   FROM grid g
  CROSS JOIN per_event p
  GROUP BY g.checkpoint_seconds, COALESCE(p.stratum, 'unknown')

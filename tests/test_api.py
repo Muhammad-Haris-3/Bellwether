@@ -174,3 +174,77 @@ def test_health_confirms_every_migration_on_a_migrated_database(
 
     assert body["schema_behind"] == []
     assert all(body["schema"].values()), body["schema"]
+
+
+@pytest.mark.db
+def test_cumulative_incidence_never_falls_with_age(client: TestClient, fresh_db: None) -> None:
+    """The invariant that caught the bug this test now guards.
+
+    An edit reverted by one hour is still reverted at six. Cumulative incidence
+    is therefore monotonically non-decreasing in age, always, for every stratum.
+
+    The first version of the query counted only events observed at or beyond
+    each age. An event that tested positive early is never checked again, so it
+    left the denominator at every later age — and took its revert out of the
+    numerator with it. The published curve fell from 10.62% to 0.76% before
+    jumping to 21.27%, which is not a thing that can happen.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from bellwether.db import connect
+
+    now = datetime.now(UTC)
+    with connect() as conn:
+        for revid in range(1, 21):
+            conn.execute(
+                """
+                INSERT INTO landing.rc_events
+                    (revid, event_ts, ns, title, is_anon, is_temp, is_minor, is_bot,
+                     sampling_stratum, sampling_weight, ingested_at_utc)
+                VALUES (%s, %s, 0, 'Page', false, false, false, false,
+                        'registered', 2.0, %s)
+                """,
+                (revid, now - timedelta(days=5), now - timedelta(days=5)),
+            )
+
+        # Five reverted at the first checkpoint and never re-checked, exactly
+        # like the production data that exposed the bug.
+        for revid in range(1, 6):
+            conn.execute(
+                """
+                INSERT INTO outcome.label_checks
+                    (revid, checkpoint_seconds, checked_at_utc, age_seconds, had_reverted_tag)
+                VALUES (%s, 3600, %s, 3600, true)
+                """,
+                (revid, now - timedelta(days=4)),
+            )
+        # The rest observed negative all the way to 48 hours.
+        for revid in range(6, 21):
+            for checkpoint in (3600, 21600, 86400, 172800):
+                conn.execute(
+                    """
+                    INSERT INTO outcome.label_checks
+                        (revid, checkpoint_seconds, checked_at_utc, age_seconds, had_reverted_tag)
+                    VALUES (%s, %s, %s, %s, false)
+                    """,
+                    (revid, checkpoint, now - timedelta(days=3), checkpoint),
+                )
+
+    rows = client.get("/maturity").json()["checkpoints"]
+    by_stratum: dict[str, list[tuple[int, float]]] = {}
+    for row in rows:
+        if row["cumulative_incidence"] is not None:
+            by_stratum.setdefault(row["stratum"], []).append(
+                (row["age_seconds"], row["cumulative_incidence"])
+            )
+
+    assert by_stratum, "no curve produced"
+    for stratum, points in by_stratum.items():
+        points.sort()
+        values = [ci for _, ci in points]
+        assert values == sorted(values), f"{stratum} incidence fell with age: {points}"
+
+    # And the five early reverts must still be counted at 48 hours.
+    at_48h = next(r for r in rows if r["age_seconds"] == 172800)
+    assert at_48h["reverted_by"] == 5
+    assert at_48h["at_risk"] == 20
