@@ -50,6 +50,39 @@ M3-FR-3 is the uncomfortable one. The honest outcome may be that the
 drift-stable feature is weaker and KC-2 no longer clears. That result gets
 published; it does not get fixed by putting the drifting feature back.
 
+### 2.1 Result, measured 2026-08-14
+
+**The prediction above was wrong, in the good direction.**
+
+| | With `log_user_id` | With `account_newness` |
+|---|---|---|
+| Model PR-AUC | 0.2431 | **0.2564** |
+| Margin | +0.1032 | **+0.1165** |
+| 95% CI | [+0.0764, +0.1363] | [+0.0882, +0.1506] |
+| Null check | 0.98× base | 0.99× base |
+| **Ablation margin** | +0.0441 | **+0.0441** |
+
+The drift-stable form is *better*, not weaker. Expressing an id against the
+frontier evidently carries the signal that mattered — "how new is this account
+relative to what exists" — while the absolute magnitude was carrying that plus
+noise that would have expired.
+
+`is_logged_out` also reappears in the top eight (+0.0184), where `log_user_id`
+had subsumed it entirely. A ratio does not encode "temporary accounts sit at
+the frontier" as completely as a raw magnitude did, so the boolean now earns
+its place again.
+
+**What has not changed is the concentration.** The ablation margin is +0.0441,
+identical to before, because removing the top account feature leaves the same
+twenty-seven others either way. The signal is still carried mostly by one
+feature.
+
+That is a different and smaller problem than it was. Concentration in a feature
+that *decays* is a scheduled failure; concentration in one that *does not* is a
+robustness concern — the model would suffer if that signal ever became
+unavailable, which is worth knowing and is not the same as knowing it will
+degrade next month.
+
 ---
 
 ## 3. The prediction register
