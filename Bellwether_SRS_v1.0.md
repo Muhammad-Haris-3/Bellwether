@@ -3,7 +3,7 @@
 **Project:** Bellwether — A Self-Maintaining Edit-Triage Service
 **Author:** Muhammad Haris Khokhar
 **Date:** 2026-08-13
-**Status:** Draft for approval — M0 not yet started
+**Status:** M0 in progress — VER-1 to VER-6 answered, see §4.3
 
 ---
 
@@ -280,7 +280,7 @@ API. Each must be resolved in M0 before dependent work starts.
 | VER-1 | Whether `mw-reverted` becomes visible on a previously ingested revision | **Answered 2026-08-13.** Yes. 128 of 4,000 edits in a 5–6 hour old window carried the tag, alongside 87 `mw-undo` on the reverting side |
 | VER-2 | Actual volume of main-namespace non-bot enwiki edits | **Preliminary 2026-08-13:** ~62 edits/minute, ≈ 90k/day. Requires a full 24-hour cycle before `R` is set (M0-T2) |
 | VER-3 | Observed base revert rate, split by editor class | **Preliminary 2026-08-13** at ~5h maturity: 19.1% logged-out (n=392), 1.5% registered (n=3,608), 3.2% overall. Lower bounds — reverts continue to arrive. Final figure at T+48h in M0-T5 |
-| VER-4 | Lift Wing Revert Risk endpoint, body, auth and limits | Open — M0-T6 (non-blocking; benchmark is M4) |
+| VER-4 | Lift Wing Revert Risk endpoint, body, auth and limits | **Answered 2026-08-13.** `POST api.wikimedia.org/service/lw/inference/v1/models/revertrisk-language-agnostic:predict`, body `{"lang":"en","rev_id":N}`, **no authentication**. `revertrisk-multilingual` also live. Returns a calibrated probability. See §6.4 |
 | VER-5 | Whether `recentchanges` re-polling returns tags applied after the edit | **Answered 2026-08-13.** Yes — the tags above arrived via the recentchanges feed, not per-revision lookups. This is a **cheaper primary harvest path than planned**: 500 revisions per request rather than 50 (§7.2 note) |
 | VER-6 | *(new)* Whether logged-out editors are identifiable | **Answered 2026-08-13.** Not by `anon`, which is never set. Temporary accounts carry a `temp` flag. See §6.3 |
 
@@ -370,7 +370,44 @@ the population prior via a sampling-weight offset applied to the model intercept
 and calibration is reported both before and after correction, on population
 weights. Population-weighted estimates accompany every descriptive statistic.
 
-### 6.4 Label sources
+### 6.4 The benchmark is strong, and that changes what this project claims
+
+Measured 2026-08-13 on 16 revisions drawn at random from ingested data, 8
+reverted and 8 not:
+
+| | n | Median score | Range |
+|---|---|---|---|
+| Reverted | 8 | 0.928 | 0.729 – 0.979 |
+| Not reverted | 8 | 0.177 | 0.079 – 0.636 |
+
+Complete separation — the lowest-scoring revert (0.73) sits above the
+highest-scoring survivor (0.64). Sixteen points is not an AUC and this is not a
+measurement; it is a signal about what M4 will find.
+
+**The honest consequence.** Wikimedia's production model is very good, and
+Bellwether's tabular baseline is unlikely to beat it. That is recorded here,
+before any model exists, so that the project is not quietly redefined later to
+avoid admitting it.
+
+It does not damage the deliverable, because ranking quality was never the
+claim. What is not published by anyone — including Wikimedia — is a
+continuously maintained, out-of-sample record of how a deployed scorer has
+actually performed, alongside a system that detects its own decay and replaces
+itself under a rule fixed in advance. **Lift Wing is the thing to be measured
+against, not the thing to be beaten**, and a project that measures itself
+honestly against a superior benchmark is worth more than one that picks a
+weaker opponent.
+
+Consequences for later milestones:
+
+- FR-26's paired comparison is now expected to favour Lift Wing, and the
+  pre-registration must not be written to avoid that outcome.
+- KC-2 stands unchanged: the kill criterion is beating the trivial
+  logged-out heuristic, not beating Wikimedia.
+- M5's promotion machinery is unaffected — champion and challenger are both
+  Bellwether's own models, and the point is the mechanism, not the winner.
+
+### 6.5 Label sources
 
 | Path | Tag | Applied to | Timing | Role |
 |---|---|---|---|---|
@@ -382,7 +419,7 @@ between two independently derived labels is itself evidence, and because
 `$wgManualRevertSearchRadius` (15) bounds what manual-revert detection can see.
 Disagreement rate between paths is reported (FR-20), never silently resolved.
 
-### 6.5 Retention
+### 6.6 Retention
 
 | Data | Retention | Reason |
 |---|---|---|
