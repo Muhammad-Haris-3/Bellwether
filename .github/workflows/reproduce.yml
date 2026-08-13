@@ -1,0 +1,68 @@
+name: Reproduce
+
+# Daily.
+#
+# Re-derives a deterministic sample of stored predictions from the raw events
+# and requires the same feature hash and the same score (M3-FR-17, M3-FR-18).
+#
+# FR-18 is what makes FR-17 mean anything. A reproducibility claim nobody
+# re-checks is a comment, and the failure it guards against is silent: a change
+# to a feature, to the fold order, or to a library version does not break
+# anything visible. It just makes every prediction in the register a number
+# whose provenance can no longer be shown.
+#
+# Needs the model dependencies, because reproducing a score means loading the
+# artifact that wrote it and running it again.
+on:
+  schedule:
+    - cron: "19 5 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "How far back to re-derive"
+        required: false
+        default: "2"
+      percent:
+        description: "Sample size, per cent of predictions in the window"
+        required: false
+        default: "5"
+
+concurrency:
+  group: reproduce
+  cancel-in-progress: false
+
+jobs:
+  reproduce:
+    name: Re-derive stored predictions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      BELLWETHER_DATABASE_URL: ${{ secrets.BELLWETHER_DATABASE_URL }}
+      BELLWETHER_ENV: production
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements-pipeline.txt -r requirements-scoring.txt
+
+      - name: Re-derive and compare
+        run: |
+          set -o pipefail
+          python -m bellwether.reproduce \
+            --days "${{ inputs.days || '2' }}" \
+            --percent "${{ inputs.percent || '5' }}" 2>&1 | tee reproduce-output.txt
+
+      - name: Surface the failure
+        if: failure()
+        run: |
+          DETAIL=$(tail -40 reproduce-output.txt 2>/dev/null \
+            | sed 's/%/%25/g; s/\r//g' \
+            | awk '{printf "%s%%0A", $0}')
+          echo "::error title=predictions not reproducible::$DETAIL"

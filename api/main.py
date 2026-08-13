@@ -174,6 +174,9 @@ SCHEMA_EXPECTATIONS = {
     "014_m3_applied_reverts": (
         "SELECT to_regclass('landing.state_applied_reverts') IS NOT NULL AS present"
     ),
+    "015_m3_reproducibility": (
+        "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
+    ),
     "013_m3_model_registry": (
         "SELECT to_regclass('register.model_registry') IS NOT NULL AS present"
     ),
@@ -561,6 +564,17 @@ SELECT count(*) AS known_before_scoring
                 WHERE l.revid = p.revid AND l.first_observed_at_utc <= p.scored_at)
 """
 
+# M3-FR-18 publishes a rate, so the rate is served. The most recent run only:
+# the table is append-only and every earlier run is still in it, but a status
+# page that averages them would hide the one that just started failing.
+REPRODUCTION_SQL = """
+SELECT ran_at, window_start, window_end, sampled, hash_matched, score_matched,
+       matched_at_scoring_time, unreproducible, model_versions, code_commit
+  FROM register.reproductions
+ ORDER BY ran_at DESC
+ LIMIT 1
+"""
+
 CHAMPION_SQL = """
 SELECT model_version, trained_at, training_start, training_end, n_train_events,
        n_train_positives, artifact_path, artifact_sha256, offline_metrics,
@@ -588,6 +602,7 @@ def register_view() -> dict[str, Any]:
     with _connect() as conn:
         totals = conn.execute(REGISTER_SQL).fetchone() or {}
         recheck = conn.execute(REGISTER_RECHECK_SQL).fetchone() or {}
+        reproduction = conn.execute(REPRODUCTION_SQL).fetchone()
         champion = conn.execute(CHAMPION_SQL).fetchone()
 
     scored = int(totals.get("predictions") or 0)
@@ -624,6 +639,34 @@ def register_view() -> dict[str, Any]:
                 "grant, so the row is never corrected in place."
             ),
         },
+        "reproducibility": (
+            None
+            if not reproduction
+            else {
+                "ran_at": reproduction["ran_at"],
+                "window": [reproduction["window_start"], reproduction["window_end"]],
+                "sampled": reproduction["sampled"],
+                "hash_matched": reproduction["hash_matched"],
+                "score_matched": reproduction["score_matched"],
+                "matched_only_at_scoring_time": reproduction["matched_at_scoring_time"],
+                "unreproducible": reproduction["unreproducible"],
+                "agreement": (
+                    round(reproduction["hash_matched"] / reproduction["sampled"], 5)
+                    if reproduction["sampled"]
+                    else None
+                ),
+                "model_versions": reproduction["model_versions"],
+                "note": (
+                    "A sample is re-derived daily from the raw events and must produce "
+                    "the same feature hash and the same score. matched_only_at_scoring_time "
+                    "counts predictions that reproduce under the state the SCORER held "
+                    "rather than the state training would have built — the gap between "
+                    "them is scoring lag, and it is a measurement, not a failure. Only the "
+                    "hash is stored, not the vector, so anything in unreproducible says "
+                    "something differs without saying what."
+                ),
+            }
+        ),
         "champion": (
             None
             if not champion
