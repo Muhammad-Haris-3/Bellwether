@@ -37,6 +37,8 @@ type Mature = {
   n: number;
   reverted: number;
   rate: number | null;
+  weighted_n: number;
+  weighted_rate: number | null;
 };
 
 type Stats = {
@@ -46,6 +48,7 @@ type Stats = {
     reverted: number;
     labels: number;
     label_checks: number;
+    revert_events: number;
     newest_event: string | null;
     oldest_event: string | null;
   };
@@ -174,6 +177,12 @@ export default function Page() {
               <div className="value">{totals.labels.toLocaleString()}</div>
               <div className="label">labels</div>
             </div>
+            <div className="card">
+              <div className="value">
+                {totals.revert_events.toLocaleString()}
+              </div>
+              <div className="label">reverts seen</div>
+            </div>
           </div>
           <p className="note">
             {overallRate !== null && (
@@ -198,6 +207,8 @@ export default function Page() {
                   <th>Sample</th>
                   <th>Reverted</th>
                   <th>Rate</th>
+                  <th>Population</th>
+                  <th>Weighted rate</th>
                 </tr>
               </thead>
               <tbody>
@@ -211,6 +222,14 @@ export default function Page() {
                         ? "—"
                         : `${(row.rate * 100).toFixed(2)}%`}
                     </td>
+                    <td className="muted">
+                      {row.weighted_n.toLocaleString()}
+                    </td>
+                    <td>
+                      {row.weighted_rate === null
+                        ? "—"
+                        : `${(row.weighted_rate * 100).toFixed(2)}%`}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -219,6 +238,11 @@ export default function Page() {
           <p className="note">
             Every rate carries its sample size and the maturity it was measured
             at. A revert rate without a maturity is a lower bound, not a rate.
+          </p>
+          <p className="note">
+            Logged-out edits are sampled at 50% and registered ones at 3%, so
+            the sample is not the population. Both rates are shown — publishing
+            only one would mean choosing which.
           </p>
 
           <h2>Pipeline</h2>

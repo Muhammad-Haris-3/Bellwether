@@ -49,6 +49,11 @@ SELECT
     (SELECT count(*) FROM landing.rc_events WHERE 'mw-reverted' = ANY(tags)) AS reverted,
     (SELECT count(*) FROM outcome.labels)                                   AS labels,
     (SELECT count(*) FROM outcome.label_checks)                             AS label_checks,
+    -- Reverting edits are recorded for the whole feed, outside the sampling
+    -- frame (M1 6.1). Published because the ratio between this and `events` is
+    -- the check that the frame has not silently blinded the secondary label
+    -- path — the failure it was introduced to prevent.
+    (SELECT count(*) FROM outcome.revert_events)                            AS revert_events,
     (SELECT max(event_ts) FROM landing.rc_events)                           AS newest_event,
     (SELECT min(event_ts) FROM landing.rc_events)                           AS oldest_event
 """
@@ -89,10 +94,19 @@ SELECT count(*) FILTER (WHERE delta > interval '10 minutes')            AS gap_c
   FROM steps
 """
 
+# M1-FR-3: every rate available raw AND population-weighted.
+#
+# The frame is case-control — logged-out edits are kept at 50 per cent and
+# registered ones at 3 — so the raw rate over the sample is not the rate in the
+# population, and the difference is large. Both are published, always. Choosing
+# whichever looked better per table would be exactly the sort of quiet
+# selection this project exists to make impossible.
 MATURE_SQL = """
 SELECT sampling_stratum,
-       count(*) AS n,
-       count(*) FILTER (WHERE 'mw-reverted' = ANY(tags)) AS reverted
+       count(*)                                          AS n,
+       count(*) FILTER (WHERE 'mw-reverted' = ANY(tags)) AS reverted,
+       sum(sampling_weight)                              AS weighted_n,
+       sum(sampling_weight) FILTER (WHERE 'mw-reverted' = ANY(tags)) AS weighted_reverted
   FROM landing.rc_events
  WHERE now() - event_ts >= interval '48 hours'
  GROUP BY sampling_stratum
@@ -223,6 +237,7 @@ def stats() -> dict[str, Any]:
             "reverted": totals.get("reverted", 0),
             "labels": totals.get("labels", 0),
             "label_checks": totals.get("label_checks", 0),
+            "revert_events": totals.get("revert_events", 0),
             "newest_event": totals.get("newest_event"),
             "oldest_event": totals.get("oldest_event"),
         },
@@ -234,6 +249,15 @@ def stats() -> dict[str, Any]:
                 "n": row["n"],
                 "reverted": row["reverted"],
                 "rate": round(row["reverted"] / row["n"], 4) if row["n"] else None,
+                # The same rate over the population the sample stands for.
+                # Under a case-control frame these differ, and publishing only
+                # one of them would mean choosing which.
+                "weighted_n": round(float(row["weighted_n"] or 0)),
+                "weighted_rate": (
+                    round(float(row["weighted_reverted"] or 0) / float(row["weighted_n"]), 4)
+                    if row["weighted_n"]
+                    else None
+                ),
             }
             for row in mature
         ],
