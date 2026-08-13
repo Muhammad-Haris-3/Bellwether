@@ -75,6 +75,18 @@ jobs:
         if: always()
         run: python -m bellwether.gapfill
 
+      # Before scoring, so the batch about to be scored reads counters that
+      # include every revert discovered since the last run.
+      #
+      # This is the half of the outcome the scorer cannot do for itself: when an
+      # edit is scored nobody knows whether it will be reverted, and until this
+      # step existed nothing came back later to say so. editor_edits_reverted
+      # and page_edits_reverted reached the model as zero in production while
+      # training saw real values.
+      - name: Fold newly discovered reverts into state
+        if: always()
+        run: python -m bellwether.state --apply-reverts
+
       # Immediately after ingestion, so the gap between an edit and its score is
       # as small as this architecture allows. The scorer exits cleanly when no
       # model is registered, so this step is harmless before M3 completes.

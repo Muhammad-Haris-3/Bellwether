@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from bellwether.db import advisory_lock, connect
@@ -115,14 +115,32 @@ def history_for(state: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-REPLAY_SQL = """
+# When this system first KNEW an edit had been reverted.
+#
+# Not when the revert happened. Those are different moments and the gap is not
+# small: MediaWiki applies the mw-reverted tag from a deferred job, and the
+# label pass that finds it runs every thirty minutes. Folding a revert in at
+# revert_ts builds training histories out of knowledge production could not
+# have had, which is a leak — quieter than a leaked column, and it survives the
+# knowability guard untouched, because no feature depends on the future of the
+# event it describes. The STATE does.
+#
+# Both discovery paths are considered and the earliest wins, because either one
+# finding it is this system knowing it.
+KNOWN_AT_SQL = """
+        (SELECT min(t) FROM (
+             SELECT r.observed_at_utc AS t
+               FROM outcome.revert_events r WHERE r.reverted_revid = e.revid
+             UNION ALL
+             SELECT l.first_observed_at_utc
+               FROM outcome.labels l WHERE l.revid = e.revid AND l.label
+         ) AS discovery)
+"""
+
+REPLAY_SQL = f"""
 SELECT e.revid, e.event_ts, e.title, e.user_name, e.user_id, e.sampling_stratum,
        (e.tags && ARRAY['mw-undo','mw-rollback','mw-manual-revert']) AS is_reverting,
-       -- Whether this edit had been reverted, and WHEN. The timestamp is what
-       -- keeps the counter honest: a revert that happens tomorrow must not
-       -- appear in a history read today.
-       (SELECT min(r.revert_ts) FROM outcome.revert_events r
-         WHERE r.reverted_revid = e.revid) AS reverted_at
+       {KNOWN_AT_SQL} AS reverted_known_at
   FROM landing.rc_events e
  WHERE e.event_ts >= now() - make_interval(days => %(days)s)
  ORDER BY e.event_ts, e.revid
@@ -132,9 +150,17 @@ SELECT e.revid, e.event_ts, e.title, e.user_name, e.user_id, e.sampling_stratum,
 def replay(conn: Any, *, days: int) -> dict[str, Any]:
     """Rebuild state by folding every event in time order.
 
-    Reverts are applied at the moment they happened, not at the moment their
-    target was edited. Folding an outcome in at the time of the edit would make
-    every history read after it aware of something that had not occurred.
+    Reverts are applied at the moment this system LEARNED of them — not at the
+    moment their target was edited, and not at the moment the revert happened.
+    Folding at the edit would make every later history read aware of something
+    that had not occurred; folding at the revert would make it aware of
+    something nobody had told us yet, which is the subtler of the two and the
+    one that survives review.
+
+    Reverts still pending at the end of the loop are applied if they are known
+    by now. The state this leaves behind is what the next event to arrive would
+    read, which is the only definition under which the online path can agree
+    with it.
     """
     with conn.cursor() as cur:
         cur.execute(REPLAY_SQL, {"days": days})
@@ -166,8 +192,16 @@ def replay(conn: Any, *, days: int) -> dict[str, Any]:
             coverage["with_history"] += 1
 
         observe(state, event)
-        if event["reverted_at"] is not None:
-            pending.append((event["reverted_at"], event))
+        if event["reverted_known_at"] is not None:
+            pending.append((event["reverted_known_at"], event))
+
+    # Everything known by now, applied. Without this the replay's final state is
+    # "as of the last event in the window" while the online path's is "as of
+    # now", and the two could never agree on the reverts discovered in between.
+    horizon = datetime.now(UTC)
+    for known_at, reverted in pending:
+        if known_at <= horizon:
+            observe_revert(state, reverted)
 
     return {"state": state, "coverage": coverage, "events": len(events)}
 
@@ -180,6 +214,69 @@ def observe_revert(state: dict[str, Any], event: dict[str, Any]) -> None:
     page = state.get("pages", {}).get(page_key(event))
     if page:
         page["reverted"] += 1
+
+
+PENDING_REVERTS_SQL = f"""
+SELECT e.revid, e.user_name, e.user_id, e.title, k.known_at
+  FROM landing.rc_events e
+  JOIN LATERAL (SELECT {KNOWN_AT_SQL} AS known_at) k ON true
+ WHERE k.known_at IS NOT NULL
+   AND k.known_at <= now()
+   AND e.event_ts >= now() - make_interval(days => %(days)s)
+   AND NOT EXISTS (SELECT 1 FROM landing.state_applied_reverts a WHERE a.revid = e.revid)
+ ORDER BY k.known_at, e.revid
+"""
+
+APPLY_EDITOR_REVERT_SQL = """
+UPDATE landing.editor_state SET edits_reverted = edits_reverted + 1 WHERE user_key = %(key)s
+"""
+
+APPLY_PAGE_REVERT_SQL = """
+UPDATE landing.page_state SET edits_reverted = edits_reverted + 1 WHERE page_key = %(key)s
+"""
+
+MARK_APPLIED_SQL = """
+INSERT INTO landing.state_applied_reverts (revid, counters_moved)
+VALUES (%(revid)s, %(moved)s)
+ON CONFLICT (revid) DO NOTHING
+"""
+
+
+def apply_reverts(conn: Any, *, days: int = 30) -> dict[str, int]:
+    """Fold newly discovered reverts into the persisted counters.
+
+    The half of the outcome the online path could not do for itself. Scoring
+    folds an event in the moment it is scored, but at that moment nobody knows
+    whether it will be reverted — that is the premise of the whole project — and
+    nothing came back later to say so. `editor_edits_reverted` and
+    `page_edits_reverted` therefore reached the model as zero in production
+    while training saw real values.
+
+    Exactly once per reverted edit, enforced by a primary key rather than by a
+    timestamp watermark. Applied in discovery order, which is the order the
+    replay uses, so the two arrive at the same counters.
+    """
+    applied = moved = missing = 0
+    with conn.cursor() as cur:
+        cur.execute(PENDING_REVERTS_SQL, {"days": days})
+        pending = cur.fetchall()
+
+        for event in pending:
+            cur.execute(APPLY_EDITOR_REVERT_SQL, {"key": user_key(event)})
+            touched = cur.rowcount
+            cur.execute(APPLY_PAGE_REVERT_SQL, {"key": page_key(event)})
+            touched += cur.rowcount
+            # An edit whose editor was never seen online cannot be incremented.
+            # It is still recorded as handled, or every run would retry it
+            # forever and the count would never mean anything.
+            if touched:
+                moved += 1
+            else:
+                missing += 1
+            cur.execute(MARK_APPLIED_SQL, {"revid": event["revid"], "moved": bool(touched)})
+            applied += 1
+
+    return {"applied": applied, "counters_moved": moved, "no_row_to_move": missing}
 
 
 LOAD_EDITORS_SQL = """
@@ -333,7 +430,30 @@ def run(*, days: int = 30) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, default=30)
+    parser.add_argument(
+        "--apply-reverts",
+        action="store_true",
+        help="fold newly discovered reverts into persisted counters, and nothing else",
+    )
     args = parser.parse_args()
+
+    if args.apply_reverts:
+        with connect() as lock_conn, advisory_lock(lock_conn, STATE_LOCK_KEY) as acquired:
+            if not acquired:
+                print("state: another run holds the lock, exiting cleanly")
+                return 0
+            run_id = new_run_id()
+            with RunContext(run_id, job="apply_reverts") as ctx, connect() as conn:
+                result = apply_reverts(conn, days=args.days)
+                ctx.rows_read = result["applied"]
+                ctx.rows_written = result["counters_moved"]
+        print(
+            f"state: folded {result['applied']:,} newly discovered reverts "
+            f"({result['counters_moved']:,} moved a counter, "
+            f"{result['no_row_to_move']:,} had no row online)"
+        )
+        return 0
+
     run(days=args.days)
     return 0
 

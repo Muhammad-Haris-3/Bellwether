@@ -45,6 +45,7 @@ from bellwether import features, knowability, state
 from bellwether.config import get_settings
 from bellwether.db import connect
 from bellwether.runlog import new_run_id
+from bellwether.state import KNOWN_AT_SQL
 
 PROVISIONAL_MATURITY_SECONDS = 48 * 3600
 
@@ -66,7 +67,7 @@ VALUES (%(window_start)s, %(window_end)s, %(maturity_hours)s, %(provisional)s,
         %(importance)s::jsonb, %(ablated_feature)s, %(ablated_margin)s)
 """
 
-DATASET_SQL = """
+DATASET_SQL = f"""
 WITH observed AS (
     SELECT c.revid,
            max(c.age_seconds)                                   AS last_observed_age,
@@ -78,8 +79,12 @@ SELECT e.revid, e.old_revid, e.event_ts, e.ns, e.title, e.user_name, e.user_id,
        e.is_anon, e.is_temp, e.is_minor, e.is_bot, e.comment, e.comment_hidden,
        e.oldlen, e.newlen, e.tags, e.sampling_stratum, e.sampling_weight,
        (e.tags && ARRAY['mw-undo','mw-rollback','mw-manual-revert']) AS is_reverting,
-       (SELECT min(r.revert_ts) FROM outcome.revert_events r
-         WHERE r.reverted_revid = e.revid)                       AS reverted_at,
+       -- When this system first KNEW, not when the revert happened. Imported
+       -- from state.py so the training matrix and the replay cannot disagree
+       -- about it — this module having its own copy of the fold is exactly the
+       -- drift state.py's docstring claims is impossible, and it is how the
+       -- old revert_ts version survived here after being fixed there.
+       {KNOWN_AT_SQL}                                            AS reverted_known_at,
        (o.ever_positive
         OR EXISTS (SELECT 1 FROM outcome.labels l
                     WHERE l.revid = e.revid AND l.label))        AS label
@@ -124,11 +129,11 @@ def build_matrix(rows: list[dict[str, Any]]) -> tuple[np.ndarray, np.ndarray, li
     for row in rows:
         now = row["event_ts"]
         still = []
-        for revert_ts, reverted in pending:
-            if revert_ts <= now:
+        for known_at, reverted in pending:
+            if known_at <= now:
                 state.observe_revert(st, reverted)
             else:
-                still.append((revert_ts, reverted))
+                still.append((known_at, reverted))
         pending = still
 
         vector = features.build(row, state.history_for(st, row))
@@ -136,8 +141,8 @@ def build_matrix(rows: list[dict[str, Any]]) -> tuple[np.ndarray, np.ndarray, li
         labels.append(1 if row["label"] else 0)
 
         state.observe(st, row)
-        if row["reverted_at"] is not None:
-            pending.append((row["reverted_at"], row))
+        if row["reverted_known_at"] is not None:
+            pending.append((row["reverted_known_at"], row))
 
     return np.asarray(matrix, dtype=float), np.asarray(labels, dtype=int), names
 

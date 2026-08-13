@@ -38,6 +38,22 @@ def _event(
     )
 
 
+def _score_the_batch(conn: Any) -> None:
+    """Exactly what the scorer does to state: load, fold in event order, persist.
+
+    No `was_reverted`, because when an edit is scored nobody knows yet — that is
+    the premise of the project, not an oversight in the scorer.
+    """
+    batch = conn.execute(
+        "SELECT revid, event_ts, title, user_name, user_id FROM landing.rc_events "
+        "ORDER BY event_ts, revid"
+    ).fetchall()
+    st = state.load_for(conn, batch)
+    for event in batch:
+        state.observe(st, event)
+    state.persist(conn, st)
+
+
 def _replay_and_persist(days: int = 7) -> None:
     """Bring persisted state to exactly what a replay produces."""
     with connect() as conn:
@@ -152,29 +168,88 @@ def test_the_online_path_cannot_maintain_the_revert_counters(fresh_db: None) -> 
             """
         )
 
-        # Exactly what the scorer does: load, fold, persist. No was_reverted,
-        # because when an edit is scored nobody knows yet.
-        batch = [
-            {"revid": 1, "event_ts": datetime.now(UTC), "title": "Page", "user_name": "Alice"},
-            {"revid": 2, "event_ts": datetime.now(UTC), "title": "Page", "user_name": "Bob"},
-        ]
-        st = state.load_for(conn, batch)
-        for event in batch:
-            state.observe(st, event)
-        state.persist(conn, st)
+        _score_the_batch(conn)
 
-    with pytest.raises(reconcile.StateDivergence) as caught:
+    with pytest.raises(reconcile.StateDivergence):
         reconcile.run(days=7)
 
-    message = str(caught.value)
-    assert "divergences" in message
-
-    # And it is specifically the revert counters that disagree.
+    # Specifically the revert counters: the replay knows, the online path does
+    # not, and nothing was ever going to tell it.
     with connect() as conn:
         replayed = state.replay(conn, days=7)["state"]
+        stored = conn.execute(
+            "SELECT edits_reverted FROM landing.editor_state WHERE user_key = 'Alice'"
+        ).fetchone()
     assert replayed["editors"]["Alice"]["edits_reverted"] == 1
+    assert stored is not None and stored["edits_reverted"] == 0
+
+    # Applying the discovered reverts is what closes it, without a replay and
+    # without overwriting anything.
     with connect() as conn:
+        result = state.apply_reverts(conn, days=30)
+    assert result == {"applied": 1, "counters_moved": 1, "no_row_to_move": 0}
+
+    assert reconcile.run(days=7)["divergences"] == 0
+
+
+@pytest.mark.db
+def test_a_revert_is_folded_in_exactly_once(fresh_db: None) -> None:
+    """Not zero times, which was the bug. Not twice, which would be worse,
+    because nothing would ever say so.
+
+    An edit can be named by several revert_events and by a label besides. They
+    all describe one fact.
+    """
+    with connect() as conn:
+        _event(conn, 1, minutes_ago=200)
+        conn.execute(
+            """
+            INSERT INTO outcome.revert_events (revert_revid, reverted_revid, revert_ts, method)
+            VALUES (2, 1, now() - make_interval(mins => 150), 'mw-undo'),
+                   (3, 1, now() - make_interval(mins => 140), 'mw-rollback')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO outcome.labels
+                (revid, label, label_source, first_observed_at_utc, detection_latency_seconds)
+            VALUES (1, true, 'mw_reverted', now() - make_interval(mins => 130), 900)
+            """
+        )
+        _score_the_batch(conn)
+
+        assert state.apply_reverts(conn)["applied"] == 1
+        # Every subsequent run must be a no-op, however often it runs.
+        assert state.apply_reverts(conn)["applied"] == 0
+        assert state.apply_reverts(conn)["applied"] == 0
+
         row = conn.execute(
             "SELECT edits_reverted FROM landing.editor_state WHERE user_key = 'Alice'"
         ).fetchone()
-    assert row is not None and row["edits_reverted"] == 0
+    assert row is not None and row["edits_reverted"] == 1
+
+
+@pytest.mark.db
+def test_a_revert_nobody_has_discovered_yet_is_not_folded_in(fresh_db: None) -> None:
+    """The leak this whole change exists to close.
+
+    The revert HAPPENED two hours ago. This system does not find out for another
+    hour. Folding it in now would build a history out of knowledge production
+    could not have had — quieter than a leaked column, and it survives the
+    knowability guard untouched, because no feature depends on the future of the
+    event it describes. The state does.
+    """
+    with connect() as conn:
+        _event(conn, 1, minutes_ago=200)
+        conn.execute(
+            """
+            INSERT INTO outcome.revert_events
+                (revert_revid, reverted_revid, revert_ts, method, observed_at_utc)
+            VALUES (2, 1, now() - make_interval(mins => 120), 'mw-undo',
+                    now() + make_interval(mins => 60))
+            """
+        )
+        assert state.apply_reverts(conn)["applied"] == 0
+
+        replayed = state.replay(conn, days=7)["state"]
+    assert replayed["editors"]["Alice"]["edits_reverted"] == 0
