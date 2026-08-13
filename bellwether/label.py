@@ -53,7 +53,17 @@ SELECT e.revid,
        EXTRACT(epoch FROM now() - e.event_ts)::bigint AS age_seconds
   FROM landing.rc_events e
  CROSS JOIN checkpoints c
- WHERE EXTRACT(epoch FROM now() - e.event_ts) >= c.checkpoint_seconds
+ -- The full grid runs on the maturity cohort only (M1 section 5). Everything
+ -- else gets exactly one check, at the final checkpoint, which is all
+ -- production needs: the grid exists to estimate one survival curve in M2, and
+ -- estimating it from one tenth of a probability sample is a study, not a
+ -- shortcut. Five rows an event was the largest storage line after rc_events.
+ --
+ -- No per-cent sign anywhere in this string. psycopg reads a bare percent as
+ -- the start of a placeholder, including inside a SQL comment, and the error
+ -- it raises names neither the comment nor the line.
+ WHERE (e.in_maturity_cohort OR c.checkpoint_seconds = %(final)s)
+   AND EXTRACT(epoch FROM now() - e.event_ts) >= c.checkpoint_seconds
    AND NOT EXISTS (
            SELECT 1 FROM outcome.label_checks lc
             WHERE lc.revid = e.revid
@@ -94,7 +104,11 @@ def due_checks(conn: Any, limit: int) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
         cur.execute(
             DUE_SQL,
-            {"checkpoints": list(LABEL_CHECKPOINTS_SECONDS), "limit": limit},
+            {
+                "checkpoints": list(LABEL_CHECKPOINTS_SECONDS),
+                "final": FINAL_CHECKPOINT,
+                "limit": limit,
+            },
         )
         return cur.fetchall()
 

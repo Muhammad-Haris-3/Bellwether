@@ -26,6 +26,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from bellwether import frame
 from bellwether.config import get_settings
 from bellwether.db import advisory_lock, connect
 from bellwether.http import MediaWikiClient
@@ -41,33 +42,43 @@ INSERT_SQL = """
 INSERT INTO landing.rc_events (
     revid, old_revid, rcid, event_ts, ns, title,
     user_name, user_id, is_anon, is_temp, is_minor, is_bot,
-    comment, comment_hidden, user_hidden, oldlen, newlen, tags,
-    sampling_stratum, sampling_weight, ingested_at_utc, ingest_run_id
+    comment, comment_hidden, user_hidden, oldlen, newlen, tags, tag_ids,
+    sampling_stratum, sampling_weight, in_maturity_cohort,
+    ingested_at_utc, ingest_run_id
 ) VALUES (
     %(revid)s, %(old_revid)s, %(rcid)s, %(event_ts)s, %(ns)s, %(title)s,
     %(user_name)s, %(user_id)s, %(is_anon)s, %(is_temp)s, %(is_minor)s, %(is_bot)s,
-    %(comment)s, %(comment_hidden)s, %(user_hidden)s, %(oldlen)s, %(newlen)s, %(tags)s,
-    %(sampling_stratum)s, %(sampling_weight)s, %(ingested_at_utc)s, %(ingest_run_id)s
+    %(comment)s, %(comment_hidden)s, %(user_hidden)s, %(oldlen)s, %(newlen)s,
+    %(tags)s, %(tag_ids)s,
+    %(sampling_stratum)s, %(sampling_weight)s, %(in_maturity_cohort)s,
+    %(ingested_at_utc)s, %(ingest_run_id)s
 )
 ON CONFLICT (revid) DO NOTHING
 """
 
 
-def stratum_of(event: dict[str, Any]) -> str:
-    """Which sampling stratum an event belongs to (SRS 6.3).
+def ensure_tag_ids(conn: Any, names: set[str], cache: dict[str, int]) -> None:
+    """Resolve tag names to ids, extending the dimension when new ones appear.
 
-    The dividing line is *logged out* versus *logged in*, not *IP* versus
-    *account*. English Wikipedia masks IPs behind temporary accounts, so a
-    logged-out editor now arrives as a named account with `temp` set. A frame
-    keyed on `anon` alone would put every edit in the registered stratum and
-    sample away the population the model most needs to see.
-
-    M0 ingests both strata at 100%, so the weight is 1.0 throughout. The label
-    is recorded anyway: M1 sets the registered-user sampling rate from the
-    volume M0 measures, and weights recorded at observation time are worth more
-    than weights reconstructed afterwards from a rule that may have changed.
+    Cached for the lifetime of a run. Tags are a closed-ish set — 67 distinct
+    values across the whole feed — so after the first page a run almost never
+    touches this table again.
     """
-    return "logged_out" if (event["is_anon"] or event.get("is_temp")) else "registered"
+    unknown = names - cache.keys()
+    if not unknown:
+        return
+
+    with conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO landing.tag_names (tag_name) VALUES (%s) ON CONFLICT DO NOTHING",
+            [(name,) for name in sorted(unknown)],
+        )
+        cur.execute(
+            "SELECT tag_id, tag_name FROM landing.tag_names WHERE tag_name = ANY(%s)",
+            (list(unknown),),
+        )
+        for row in cur.fetchall():
+            cache[row["tag_name"]] = row["tag_id"]
 
 
 def read_cursor(conn: Any) -> datetime | None:
@@ -100,17 +111,33 @@ def write_cursor(conn: Any, position: datetime, run_id: Any) -> None:
     )
 
 
-def insert_page(conn: Any, events: list[dict[str, Any]], run_id: Any) -> int:
-    """Insert one page of events. Returns how many were new."""
+def insert_page(
+    conn: Any,
+    events: list[dict[str, Any]],
+    run_id: Any,
+    tag_cache: dict[str, int] | None = None,
+) -> int:
+    """Insert one page of already-framed events. Returns how many were new.
+
+    Callers pass only events that :func:`bellwether.frame.in_sample` accepted.
+    The frame decision is deliberately not made here: what is stored and what
+    is *decided to be stored* are different concerns, and mixing them would put
+    the project's most consequential parameter inside an insert helper.
+    """
     if not events:
         return 0
+
+    cache = tag_cache if tag_cache is not None else {}
+    ensure_tag_ids(conn, {t for e in events for t in e.get("tags", [])}, cache)
 
     now = utcnow()
     rows = [
         {
             **event,
-            "sampling_stratum": stratum_of(event),
-            "sampling_weight": 1.0,
+            "tag_ids": sorted(cache[t] for t in event.get("tags", []) if t in cache),
+            "sampling_stratum": frame.stratum_of(event),
+            "sampling_weight": frame.weight_of(event),
+            "in_maturity_cohort": frame.in_maturity_cohort(event),
             "ingested_at_utc": now,
             "ingest_run_id": run_id,
         }
@@ -144,38 +171,51 @@ def run(*, start_override: datetime | None = None, max_pages: int | None = None)
                 cursor = utcnow() - timedelta(minutes=settings.cold_start_lookback_minutes)
                 print(f"ingest: no cursor, cold-starting from {cursor.isoformat()}")
 
+        tag_cache: dict[str, int] = {}
+        sampled = 0
+
         with RunContext(run_id, job=JOB, window_from=cursor) as run_ctx:
             newest = cursor
             with MediaWikiClient() as client:
                 for page in iter_recent_changes(client, start=cursor, max_pages=pages):
+                    # The frame is applied to the page, not to the window. The
+                    # cursor must still advance past events the frame rejected,
+                    # or every run would re-read the 90% it does not keep.
+                    keep = [e for e in page if frame.in_sample(e)]
+
                     # One transaction per page: commit the rows, then move the
                     # cursor. Doing it the other way round would lose a page on
                     # a crash between the two.
                     with connect() as conn:
-                        written = insert_page(conn, page, run_id)
+                        written = insert_page(conn, keep, run_id, tag_cache)
                         page_newest = max(e["event_ts"] for e in page)
                         if page_newest > newest:
                             newest = page_newest
                         write_cursor(conn, newest, run_id)
 
                     run_ctx.rows_read += len(page)
+                    sampled += len(keep)
                     run_ctx.rows_written += written
 
                 run_ctx.api_calls = client.calls
 
             run_ctx.window_to = newest
-            result = {
+            result: dict[str, Any] = {
                 "run_id": str(run_id),
                 "from": cursor.isoformat(),
                 "to": newest.isoformat(),
-                "read": run_ctx.rows_read,
+                "seen": run_ctx.rows_read,
+                "sampled": sampled,
                 "written": run_ctx.rows_written,
                 "api_calls": run_ctx.api_calls,
             }
 
+    seen = int(result["seen"])
+    kept_pct = (100.0 * int(result["sampled"]) / seen) if seen else 0.0
     print(
-        f"ingest: {result['read']} read, {result['written']} new, "
-        f"{result['api_calls']} API calls, cursor at {result['to']}"
+        f"ingest: {seen} seen, {result['sampled']} sampled ({kept_pct:.1f}%), "
+        f"{result['written']} new, {result['api_calls']} API calls, "
+        f"cursor at {result['to']}"
     )
     return result
 

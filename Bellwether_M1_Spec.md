@@ -89,8 +89,22 @@ never kept.
 Deterministic by hash of `revid`, so the frame is reproducible and re-running
 ingestion selects the identical set.
 
+> **The logged-out share is strongly diurnal — measured during implementation.**
+> A live window at 03:00–03:32 UTC contained **5.2%** logged-out edits against
+> the 15.7% figure this table is built on, and that 15.7% itself came from an
+> Aug-10 window spanning 12:00–18:00 UTC, which is daytime for both the
+> Americas and Europe. The population inputs above are therefore probably
+> **over**-estimates, making the frame conservative on storage rather than
+> optimistic.
+>
+> The frame is **not** adjusted for this. It is fixed before ingestion runs
+> under it, because changing it afterwards does not refine downstream estimates
+> — it invalidates comparisons across the change (§11). What M1 owes instead is
+> a re-measurement of the population over a full 24-hour cycle, reported
+> against these assumptions rather than used to quietly revise them.
+
 **Yield check.** 7,000 × 22.25% + 2,280 × 3.26% ≈ **1,630 matured positives per
-day**. `PREREGISTRATION.md` P-3 requires 2,500 before any promotion, reached in
+day**, subject to the caveat above. `PREREGISTRATION.md` P-3 requires 2,500 before any promotion, reached in
 under two days — comfortably inside P-4's seven-day minimum, so the sample size
 requirement never becomes the binding constraint on a decision.
 

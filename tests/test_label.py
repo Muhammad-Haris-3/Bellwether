@@ -10,22 +10,29 @@ from typing import Any
 
 import pytest
 
+from bellwether.config import LABEL_CHECKPOINTS_SECONDS
 from bellwether.db import connect
 from bellwether.label import FINAL_CHECKPOINT, due_checks
 
 pytestmark = pytest.mark.db
 
 
-def _insert_event(conn: Any, revid: int, age_seconds: int) -> None:
+def _insert_event(conn: Any, revid: int, age_seconds: int, *, cohort: bool = True) -> None:
+    """Seed an event. Defaults into the maturity cohort.
+
+    Most of these tests are about the checkpoint grid, and only the cohort
+    receives it (M1 §5). The default keeps those tests about what they are
+    testing; `cohort=False` is used where the split itself is the subject.
+    """
     conn.execute(
         """
         INSERT INTO landing.rc_events
             (revid, event_ts, ns, title, is_anon, is_temp, is_minor, is_bot,
-             sampling_stratum, ingested_at_utc)
+             sampling_stratum, in_maturity_cohort, ingested_at_utc)
         VALUES (%s, now() - make_interval(secs => %s), 0, 'Page',
-                false, false, false, false, 'registered', now())
+                false, false, false, false, 'registered', %s, now())
         """,
-        (revid, age_seconds),
+        (revid, age_seconds, cohort),
     )
 
 
@@ -83,6 +90,32 @@ def test_least_overdue_checks_come_first(fresh_db: None) -> None:
     first = due[0]
     assert int(first["revid"]) == 2
     assert int(first["checkpoint_seconds"]) == 3_600
+
+
+def test_a_non_cohort_edit_is_checked_once_at_maturity(fresh_db: None) -> None:
+    """M1-FR-7. Five rows an event was the largest storage line after
+    rc_events itself, and the grid exists to estimate one curve in M2 — not to
+    run on every event forever."""
+    with connect() as conn:
+        _insert_event(conn, 1, age_seconds=700_000, cohort=False)
+        due = due_checks(conn, limit=100)
+
+    assert [int(r["checkpoint_seconds"]) for r in due] == [FINAL_CHECKPOINT]
+
+
+def test_a_cohort_edit_of_the_same_age_gets_the_whole_grid(fresh_db: None) -> None:
+    with connect() as conn:
+        _insert_event(conn, 1, age_seconds=700_000, cohort=True)
+        due = due_checks(conn, limit=100)
+
+    assert len(due) == len(LABEL_CHECKPOINTS_SECONDS)
+
+
+def test_a_young_non_cohort_edit_is_not_due_at_all(fresh_db: None) -> None:
+    """It has passed the 1h checkpoint, but that checkpoint is not its to reach."""
+    with connect() as conn:
+        _insert_event(conn, 1, age_seconds=7_200, cohort=False)
+        assert due_checks(conn, limit=100) == []
 
 
 def test_the_final_checkpoint_is_the_last_one_configured() -> None:

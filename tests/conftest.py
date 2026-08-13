@@ -60,8 +60,12 @@ def fresh_db(db_url: str) -> Iterator[None]:
 
     apply_all()
     with connect() as conn:
+        # tag_names is included deliberately. Leaving it out let the dimension
+        # carry rows between tests, so a test asserting "one tag exists" passed
+        # or failed depending on which tests had run before it.
         conn.execute(
-            "TRUNCATE outcome.labels, outcome.label_checks, "
-            "landing.rc_events, landing.cursors, landing.run_log RESTART IDENTITY CASCADE"
+            "TRUNCATE outcome.labels, outcome.label_checks, landing.rc_events, "
+            "landing.tag_names, landing.cursors, landing.run_log "
+            "RESTART IDENTITY CASCADE"
         )
     yield

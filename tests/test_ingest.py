@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from bellwether.db import connect
-from bellwether.ingest import insert_page, read_cursor, stratum_of, write_cursor
+from bellwether.ingest import insert_page, read_cursor, write_cursor
 from bellwether.runlog import new_run_id
 
 pytestmark = pytest.mark.db
@@ -137,31 +137,49 @@ def test_cursor_does_not_advance_when_the_page_fails(fresh_db: None) -> None:
         assert read_cursor(conn) == start
 
 
-def test_stratum_is_recorded_per_event(fresh_db: None) -> None:
+def test_stratum_and_weight_are_recorded_per_event(fresh_db: None) -> None:
+    """M1-FR-2. The weight is the inverse sampling probability, written at
+    observation time so population estimates survive a change of frame."""
+    from bellwether import frame
+
     run_id = new_run_id()
     with connect() as conn:
         insert_page(conn, [_event(1, temp=True), _event(2, temp=False)], run_id)
         rows = conn.execute(
-            "SELECT revid, sampling_stratum, sampling_weight FROM landing.rc_events ORDER BY revid"
+            "SELECT revid, sampling_stratum, sampling_weight, in_maturity_cohort "
+            "FROM landing.rc_events ORDER BY revid"
         ).fetchall()
 
     assert [r["sampling_stratum"] for r in rows] == ["logged_out", "registered"]
-    assert all(float(r["sampling_weight"]) == 1.0 for r in rows)
+    assert float(rows[0]["sampling_weight"]) == pytest.approx(
+        100 / frame.SAMPLE_PERCENT["logged_out"]
+    )
+    assert float(rows[1]["sampling_weight"]) == pytest.approx(
+        100 / frame.SAMPLE_PERCENT["registered"]
+    )
 
 
-def test_a_temporary_account_is_logged_out_not_registered() -> None:
-    """The finding that reshaped the sampling frame (SRS 6.3).
+def test_tags_are_stored_as_ids_against_the_dimension(fresh_db: None) -> None:
+    """M1-FR-4. 67 distinct tags exist across the whole feed; storing the text
+    on every row cost ~40 bytes of a 372-byte budget."""
+    run_id = new_run_id()
+    tagged = {**_event(1), "tags": ["mobile edit", "mw-reverted"]}
+    with connect() as conn:
+        insert_page(conn, [tagged], run_id)
+        row = conn.execute("SELECT tag_ids FROM landing.rc_events WHERE revid = 1").fetchone()
+        names = conn.execute("SELECT tag_name FROM landing.tag_names ORDER BY tag_name").fetchall()
 
-    English Wikipedia masks IP addresses behind temporary accounts, so a
-    logged-out editor arrives as a named account. Classifying by `anon` alone
-    put 100% of a live 2,498-edit sample into the registered stratum — which
-    would have sampled away most of the positive class before training began.
-    """
-    assert stratum_of({"is_anon": False, "is_temp": True}) == "logged_out"
-    assert stratum_of({"is_anon": True, "is_temp": False}) == "logged_out"
-    assert stratum_of({"is_anon": False, "is_temp": False}) == "registered"
+    assert row is not None and len(row["tag_ids"]) == 2
+    assert [n["tag_name"] for n in names] == ["mobile edit", "mw-reverted"]
 
 
-def test_stratum_tolerates_an_event_without_the_temp_key() -> None:
-    """Rows parsed before is_temp existed must not crash the classifier."""
-    assert stratum_of({"is_anon": False}) == "registered"
+def test_the_tag_dimension_does_not_duplicate_across_pages(fresh_db: None) -> None:
+    run_id = new_run_id()
+    cache: dict[str, int] = {}
+    with connect() as conn:
+        insert_page(conn, [{**_event(1), "tags": ["visualeditor"]}], run_id, cache)
+    with connect() as conn:
+        insert_page(conn, [{**_event(2), "tags": ["visualeditor"]}], run_id, cache)
+        rows = conn.execute("SELECT count(*) AS n FROM landing.tag_names").fetchone()
+
+    assert rows is not None and rows["n"] == 1
