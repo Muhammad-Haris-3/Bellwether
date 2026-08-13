@@ -2,7 +2,7 @@
 name = "bellwether"
 version = "0.1.0"
 description = "A self-maintaining edit-triage service"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -13,7 +13,7 @@ include = ["bellwether*", "api*"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "DTZ"]
@@ -36,6 +36,6 @@ markers = [
 ]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 warn_unused_ignores = true
 ignore_missing_imports = true

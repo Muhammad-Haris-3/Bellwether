@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
@@ -43,7 +44,7 @@ from sklearn.metrics import average_precision_score
 from bellwether import features, knowability, state
 from bellwether.config import get_settings
 from bellwether.db import connect
-from bellwether.runlog import RunContext, new_run_id
+from bellwether.runlog import new_run_id
 
 PROVISIONAL_MATURITY_SECONDS = 48 * 3600
 
@@ -58,7 +59,7 @@ INSERT INTO outcome.evaluations
      n_features, pr_auc, margin, ci_low, ci_high, margin_required, clears_kc2,
      feature_names, code_commit, run_id)
 VALUES (%(window_start)s, %(window_end)s, %(maturity_hours)s, %(provisional)s,
-        %(n_events)s, %(n_positives)s, %(n_features)s, %(pr_auc)s, %(margin)s,
+        %(n_events)s, %(n_positives)s, %(n_features)s, %(pr_auc)s::jsonb, %(margin)s,
         %(ci_low)s, %(ci_high)s, %(margin_required)s, %(clears)s,
         %(features)s, %(commit)s, %(run_id)s)
 """
@@ -203,10 +204,21 @@ def paired_bootstrap(
     return observed, float(np.nanpercentile(diffs, 2.5)), float(np.nanpercentile(diffs, 97.5))
 
 
+def parse_when(text: str) -> datetime:
+    """ISO 8601 to an aware datetime.
+
+    The workflow passes strings. A str parameter reaching a timestamptz column
+    is sent as text, and Postgres has no implicit assignment cast for it — a
+    failure that surfaces at the very end of a run, after all the work.
+    """
+    return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(UTC)
+
+
 def run(*, window_start: str, window_end: str, folds: int = 4) -> dict[str, Any]:
     run_id = new_run_id()
+    start, end = parse_when(window_start), parse_when(window_end)
     with connect() as conn:
-        rows = load(conn, window_start=window_start, window_end=window_end)
+        rows = load(conn, window_start=start, window_end=end)
 
     print("=" * 74)
     print("PROVISIONAL. Maturity fixed at 48h because the real window needs the")
@@ -246,8 +258,8 @@ def run(*, window_start: str, window_end: str, folds: int = 4) -> dict[str, Any]
         print("On the real maturity window this would end the project at M2.")
 
     record = {
-        "window_start": window_start,
-        "window_end": window_end,
+        "window_start": start,
+        "window_end": end,
         "maturity_hours": PROVISIONAL_MATURITY_SECONDS // 3600,
         "provisional": True,
         "n_events": len(y),
@@ -265,8 +277,7 @@ def run(*, window_start: str, window_end: str, folds: int = 4) -> dict[str, Any]
     }
     with connect() as conn, conn.cursor() as cur:
         cur.execute(INSERT_EVALUATION_SQL, record)
-    print("
-recorded to outcome.evaluations — served at /kc2")
+    print("\nrecorded to outcome.evaluations - served at /kc2")
 
     return {
         "decided": True,
