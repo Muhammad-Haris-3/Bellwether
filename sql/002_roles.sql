@@ -30,6 +30,48 @@ $$;
 
 
 -- ---------------------------------------------------------------------------
+-- Let the owner assume both roles.
+--
+-- Needed so the append-only guarantee can be VERIFIED — SET ROLE is the only
+-- way to test a grant without holding that role's password, and a guarantee
+-- that can only be checked when someone happens to have credentials to hand is
+-- one that stops being checked.
+--
+-- This weakens nothing. The owner already owns every table in both schemas and
+-- so bypasses their grants entirely; membership adds no capability it did not
+-- already have. What it adds is the ability to demonstrate, on any run, that
+-- the roles the pipeline and the API actually use cannot rewrite history.
+--
+-- PostgreSQL 16 changed role membership so a creating role no longer
+-- automatically gets usable SET on the created role in every configuration.
+-- Stating it explicitly means the verification does not depend on a default
+-- that varies between a local server and a managed provider.
+-- ---------------------------------------------------------------------------
+-- Best-effort, deliberately. Granting a role requires ADMIN OPTION on it, and
+-- roles are cluster-wide while databases are not — so an owner can inherit
+-- roles some other owner created and hold no ADMIN on them. Letting that abort
+-- the migration would make an inconvenience for the verifier into a failure of
+-- the schema, which is the wrong order of importance.
+--
+-- When it does not apply, the bootstrap script says so and falls back to
+-- reading has_table_privilege() from the catalogue, which needs no membership.
+DO $$
+BEGIN
+    BEGIN
+        EXECUTE format('GRANT bellwether_writer TO %I', current_user);
+    EXCEPTION WHEN insufficient_privilege THEN
+        RAISE NOTICE 'no ADMIN on bellwether_writer; SET ROLE verification unavailable';
+    END;
+    BEGIN
+        EXECUTE format('GRANT bellwether_readonly TO %I', current_user);
+    EXCEPTION WHEN insufficient_privilege THEN
+        RAISE NOTICE 'no ADMIN on bellwether_readonly; SET ROLE verification unavailable';
+    END;
+END
+$$;
+
+
+-- ---------------------------------------------------------------------------
 -- bellwether_writer
 -- ---------------------------------------------------------------------------
 GRANT USAGE ON SCHEMA landing, outcome TO bellwether_writer;

@@ -73,12 +73,24 @@ def role_has_login(conn: psycopg.Connection, role: str) -> bool:
     return bool(row and row[0])
 
 
-def ensure_login(conn: psycopg.Connection, role: str, password: str) -> None:
-    conn.execute(
-        sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(
-            sql.Identifier(role), sql.Literal(password)
+def ensure_login(conn: psycopg.Connection, role: str, password: str) -> bool:
+    """Give the role a login and a password. False if we are not allowed to.
+
+    Altering a role needs CREATEROLE *and* ADMIN OPTION on that role. Roles are
+    cluster-wide while databases are not, so an owner can find a role already
+    present that some other owner created, and hold neither. That is a
+    recoverable situation — the grants may be entirely correct — so it is
+    reported rather than raised.
+    """
+    try:
+        conn.execute(
+            sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(
+                sql.Identifier(role), sql.Literal(password)
+            )
         )
-    )
+    except psycopg.errors.InsufficientPrivilege:
+        return False
+    return True
 
 
 MOVE_CURSOR = (
@@ -103,18 +115,82 @@ def _attempt(dsn: str, statement: str, *, as_role: str | None = None) -> str:
     reusing the connection would make every subsequent statement fail for the
     wrong reason — which is exactly how a broken grant hides behind a cascade
     of unrelated errors.
+
+    SET ROLE is attempted separately and its failure reported distinctly.
+    Assuming a role you are not a member of raises InsufficientPrivilege — the
+    same error a denied statement raises — so folding them together makes every
+    forbidden probe report "refused" without having executed anything at all.
+    Six passes that prove nothing, and only a probe expecting success to notice.
     """
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
             if as_role:
-                conn.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(as_role)))
-            conn.execute(statement.encode())
-    except psycopg.errors.InsufficientPrivilege:
-        return "refused"
+                try:
+                    conn.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(as_role)))
+                except psycopg.Error as exc:
+                    return f"noassume|{str(exc).splitlines()[0][:110]}"
+            try:
+                conn.execute(statement.encode())
+            except psycopg.errors.InsufficientPrivilege:
+                return "refused"
     except Exception as exc:  # noqa: BLE001
         first_line = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
         return f"error|{type(exc).__name__}: {first_line[:110]}"
     return "allowed"
+
+
+# (role, table, privilege, must_have) — read straight from the catalogue.
+#
+# Independent of SET ROLE and of any password, so it answers "what is actually
+# granted" even when no way of acting as the role is available. When a probe
+# and this table disagree, this one is describing the grant and the probe is
+# describing something else.
+EXPECTED_PRIVILEGES: list[tuple[str, str, str, bool]] = [
+    (WRITER, "landing.rc_events", "INSERT", True),
+    (WRITER, "landing.rc_events", "UPDATE", False),
+    (WRITER, "landing.rc_events", "DELETE", False),
+    (WRITER, "outcome.labels", "INSERT", True),
+    (WRITER, "outcome.labels", "UPDATE", False),
+    (WRITER, "outcome.labels", "DELETE", False),
+    (WRITER, "outcome.label_checks", "INSERT", True),
+    (WRITER, "outcome.label_checks", "UPDATE", False),
+    (WRITER, "outcome.label_checks", "DELETE", False),
+    (WRITER, "landing.cursors", "INSERT", True),
+    (WRITER, "landing.cursors", "UPDATE", True),
+    (WRITER, "landing.run_log", "INSERT", True),
+    (WRITER, "landing.run_log", "UPDATE", True),
+    (READER, "landing.rc_events", "SELECT", True),
+    (READER, "landing.rc_events", "INSERT", False),
+    (READER, "outcome.labels", "SELECT", True),
+    (READER, "outcome.labels", "INSERT", False),
+    (READER, "landing.cursors", "INSERT", False),
+]
+
+
+def check_privileges(url: str) -> bool:
+    """Assert the grant catalogue matches what sql/002 intends."""
+    all_good = True
+    with psycopg.connect(url, autocommit=True) as conn:
+        for role, table, privilege, must_have in EXPECTED_PRIVILEGES:
+            row = conn.execute(
+                "SELECT has_table_privilege(%s, %s, %s) AS granted",
+                (role, table, privilege),
+            ).fetchone()
+            granted = bool(row and row[0])
+            if granted == must_have:
+                verb = "has" if must_have else "lacks"
+                ok(f"{role} {verb} {privilege} on {table}")
+            else:
+                fail(
+                    f"{role} {'LACKS' if must_have else 'HAS'} {privilege} "
+                    f"on {table} - expected the opposite"
+                )
+                all_good = False
+    return all_good
+
+
+def can_assume(url: str, role: str) -> bool:
+    return _attempt(url, "SELECT 1", as_role=role) == "allowed"
 
 
 def seed_probe(url: str) -> None:
@@ -154,6 +230,19 @@ def verify_grants(url: str) -> bool:
     never be skipped: it is the one that proves the append-only property.
     """
     all_good = True
+
+    # Establish this FIRST. Without it every probe below reports "refused"
+    # having executed nothing, and the forbidden ones all look like passes.
+    for role in (WRITER, READER):
+        if can_assume(url, role):
+            ok(f"can act as {role} - probes below are meaningful")
+        else:
+            warn(f"cannot SET ROLE {role} - skipping the behavioural probes")
+            warn("  the owner lacks ADMIN on that role, which happens when some")
+            warn("  other owner created it (roles are cluster-wide, databases are not)")
+            warn("  STEP 4 read the grants from the catalogue and is authoritative")
+            return True
+
     seed_probe(url)
 
     for role, statement in FORBIDDEN:
@@ -249,11 +338,19 @@ def main() -> int:
                 warn("  re-run with --rotate-passwords to change it")
             else:
                 pw = secrets.token_urlsafe(24)
-                ensure_login(conn, role, pw)
-                passwords[role] = pw
-                ok(f"{role} login set")
+                if ensure_login(conn, role, pw):
+                    passwords[role] = pw
+                    ok(f"{role} login set")
+                else:
+                    warn(f"not permitted to alter {role}; password unchanged")
+                    warn("  needs CREATEROLE and ADMIN OPTION on that role")
 
-    step(4, "Verify the append-only guarantee ON THIS SERVER")
+    step(4, "Grants as recorded in the catalogue")
+    if not check_privileges(url):
+        print(f"\n{RED}The grants are not what sql/002 intends. Do not deploy.{RESET}")
+        return 1
+
+    step(5, "Verify the append-only guarantee ON THIS SERVER")
     if not verify_grants(url):
         print(f"\n{RED}The guarantee does not hold. Do not deploy this database.{RESET}")
         return 1
@@ -275,7 +372,7 @@ def main() -> int:
         warn("  the grants above are proven; the credentials are unchanged and")
         warn("  were verified when they were issued")
 
-    step(5, "Connection strings")
+    step(6, "Connection strings")
     if not passwords:
         print(f"\n  {DIM}Passwords unchanged. Keep using the strings you already have.{RESET}")
         print(f"  {DIM}Lost them? Re-run with --rotate-passwords.{RESET}\n")
