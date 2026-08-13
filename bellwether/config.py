@@ -76,14 +76,18 @@ class Settings(BaseSettings):
     # cursor as far as it got and the next run continues.
     max_pages_per_run: int = 40
 
-    # Bounds one labelling run the same way. 2,000 (revid, checkpoint) pairs is
-    # at most 40 requests at 50 revids each — about a minute at the self-imposed
-    # rate ceiling, leaving ample headroom inside the workflow budget.
+    # Bounds one labelling run the same way. 6,000 (revid, checkpoint) pairs
+    # collapse to at most 6,000 distinct revisions, so at 50 revids per request
+    # that is at most 120 requests — about three minutes at the self-imposed
+    # rate ceiling, inside the ten-minute workflow budget with room to spare.
     #
-    # This is knowingly below what a full checkpoint grid over ~90k edits/day
-    # would need. M0 is measuring, not keeping up; the sustainable cadence is
-    # M1's problem and VER-5 already found the cheaper path it will use.
-    max_label_checks_per_run: int = 2_000
+    # At a 30-minute cadence that is 288k checks/day against a grid that wants
+    # ~450k while M0 ingests 100% of edits unsampled. The shortfall is
+    # deliberate and temporary: M1 applies the sampling frame, which removes
+    # most of the registered stratum, and switches to the recentchanges
+    # re-poll path VER-5 found, which fetches 500 revisions per request rather
+    # than 50. M0 is measuring, not keeping up.
+    max_label_checks_per_run: int = 6_000
 
     # How far back the secondary label path re-derives on each run. It costs no
     # API calls at all — it reads tags already ingested — so the window is

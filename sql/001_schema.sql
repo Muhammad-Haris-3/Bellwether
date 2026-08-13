@@ -130,6 +130,13 @@ CREATE INDEX IF NOT EXISTS rc_events_event_ts_idx
 CREATE INDEX IF NOT EXISTS rc_events_event_ts_revid_idx
     ON landing.rc_events (event_ts, revid);
 
+-- The secondary label path finds reverting edits with `tags && ARRAY[...]`,
+-- and runs on every ingestion — every ten minutes, over a 48-hour lookback.
+-- At ~90k edits/day that is a 180k-row scan 144 times a day without this.
+-- GIN is the index type array containment can actually use.
+CREATE INDEX IF NOT EXISTS rc_events_tags_gin_idx
+    ON landing.rc_events USING gin (tags);
+
 
 -- ---------------------------------------------------------------------------
 -- outcome.label_checks  (M0-T4, and the raw material for M2)

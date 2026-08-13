@@ -1,0 +1,74 @@
+name: Label
+
+# Every thirty minutes.
+#
+# Slower than ingestion on purpose. This job spends API calls; the checkpoint
+# grid it works through is time-based, and nothing in it becomes more accurate
+# for being asked sooner. Ingestion is latency-sensitive, labelling is not.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Max (revid, checkpoint) pairs to check this run"
+        required: false
+        type: string
+
+concurrency:
+  group: label
+  cancel-in-progress: false
+
+jobs:
+  label:
+    name: Harvest mw-reverted
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      BELLWETHER_DATABASE_URL: ${{ secrets.BELLWETHER_DATABASE_URL }}
+      BELLWETHER_ENV: production
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements-pipeline.txt
+
+      # At the configured limit this is ~120 requests, about three minutes at
+      # the self-imposed 40/min ceiling — comfortably inside the timeout.
+      #
+      # It does NOT keep up with the full checkpoint grid over 100% of edits,
+      # and is not meant to. M0 ingests everything unsampled to measure volume;
+      # M1 applies the sampling frame, which cuts the grid by roughly the
+      # registered-stratum rate, and switches to the recentchanges re-poll path
+      # VER-5 found (500 revisions per request instead of 50). The backlog M0
+      # accumulates is a measurement artefact with two known fixes, not debt.
+      - name: Check matured edits for the revert tag
+        run: |
+          if [ -n "${{ inputs.limit }}" ]; then
+            python -m bellwether.label --limit "${{ inputs.limit }}"
+          else
+            python -m bellwether.label
+          fi
+
+      # Read-only, and allowed to fail without failing the run. Printing the
+      # measurements into the job log means the state of the project is legible
+      # from the Actions tab without a database client — which is the same
+      # principle as putting failures in annotations rather than behind a login.
+      - name: Measurements
+        if: always()
+        continue-on-error: true
+        run: python -m bellwether.report
+
+      - name: Surface the failure
+        if: failure()
+        run: |
+          echo "::error title=label failed::Check landing.run_log. Checks are \
+          recorded per (revid, checkpoint) and are idempotent, so a failed run \
+          re-checks rather than skips."

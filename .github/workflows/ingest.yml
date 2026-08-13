@@ -1,0 +1,74 @@
+name: Ingest
+
+# Every ten minutes.
+#
+# GitHub's cron is best-effort: runs are delayed under load and skipped
+# entirely when the platform is busy. That is not worked around, because it
+# cannot be. Ingestion resumes from a durable cursor instead, so a run that
+# never happened becomes latency the next run absorbs — never a hole. The
+# target is coverage, not punctuality.
+#
+# Scheduled workflows are disabled after 60 days without repository activity
+# (SRS R-6). The staleness figure on the status page is what surfaces that,
+# rather than silence.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "ISO timestamp to ingest from, ignoring the cursor (backfill / outage test)"
+        required: false
+        type: string
+
+# A delayed run must never overlap its successor. The advisory lock in the job
+# itself is the real guard — this only avoids queuing pointless runners.
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    name: Ingest and derive free labels
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      BELLWETHER_DATABASE_URL: ${{ secrets.BELLWETHER_DATABASE_URL }}
+      BELLWETHER_ENV: production
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      # Pipeline requirements only. The dev set drags in pytest and respx,
+      # which have no business running against the production database.
+      - name: Install
+        run: pip install -r requirements-pipeline.txt
+
+      - name: Ingest recent changes
+        run: |
+          if [ -n "${{ inputs.since }}" ]; then
+            python -m bellwether.ingest --since "${{ inputs.since }}"
+          else
+            python -m bellwether.ingest
+          fi
+
+      # Runs even when ingestion failed. This path costs no API calls at all —
+      # it reads revert tags already in the database — so there is no reason to
+      # skip it, and a partial ingestion is exactly when the cheapest available
+      # labels are worth collecting.
+      - name: Derive labels from revert tags
+        if: always()
+        run: python -m bellwether.label_secondary
+
+      - name: Surface the failure
+        if: failure()
+        run: |
+          echo "::error title=ingest failed::Check landing.run_log for the job, \
+          error class and window. The cursor will not have advanced past the \
+          last committed page, so the next run resumes rather than skips."
