@@ -77,10 +77,6 @@ EVENT_FEATURES: dict[str, FeatureFn] = {
     # 3.3%. Anything the model adds is measured against it, not against zero.
     "is_logged_out": lambda e, h: float(bool(e.get("is_anon") or e.get("is_temp"))),
     "is_temp_account": lambda e, h: float(bool(e.get("is_temp"))),
-    # user_id rises monotonically with account creation, so its magnitude is an
-    # account-age proxy. It was fixed before the edit existed and cannot leak.
-    # log1p because the range spans eight orders of magnitude.
-    "log_user_id": lambda e, h: math.log1p(float(e.get("user_id") or 0)),
     "is_minor": lambda e, h: float(bool(e.get("is_minor"))),
     # Size.
     "byte_delta": lambda e, h: float(_byte_delta(e)),
@@ -113,6 +109,33 @@ EVENT_FEATURES: dict[str, FeatureFn] = {
 }
 
 
+def _account_newness(event: dict[str, Any], history: History) -> float:
+    """How new this account is, measured against the id frontier at the time.
+
+    Replaces `log_user_id`, which M2 measured as by far the most important
+    feature — and which drifts by construction. Account ids only increase, so a
+    model trained on August's magnitudes meets systematically larger ones in
+    September. The project identified the mechanism by which its own first
+    model would decay before that model was ever deployed.
+
+    A ratio against the highest id seen so far does not move: a brand-new
+    account scores near 1 in any month, a veteran near 0 in any month. The
+    inputs keep rising; the feature does not.
+
+    Clamped to 1.0 because the frontier is the maximum seen STRICTLY BEFORE
+    this event, so an event carrying the highest id yet would otherwise exceed
+    it. Using a frontier that included the event itself would be a one-row
+    leak — small, and exactly the kind that is never noticed.
+    """
+    user_id = float(event.get("user_id") or 0)
+    if user_id <= 0:
+        return 0.0
+    frontier = float(history.get("max_user_id_seen", 0) or 0)
+    if frontier <= 0:
+        return 1.0
+    return min(user_id / frontier, 1.0)
+
+
 def _days_since_first_seen(event: dict[str, Any], history: History) -> float:
     first = history.get("editor_first_seen")
     if not isinstance(first, datetime) or not isinstance(event.get("event_ts"), datetime):
@@ -127,6 +150,9 @@ def _days_since_first_seen(event: dict[str, Any], history: History) -> float:
 # future-activity probe would not catch it — the probe adds keys, it does not
 # police attribute access.
 HISTORY_FEATURES: dict[str, FeatureFn] = {
+    # The drift-stable replacement for log_user_id. Lives here rather than in
+    # EVENT_FEATURES because it needs the frontier, which is state.
+    "account_newness": _account_newness,
     # Sparse for registered editors under a 3% frame, and measured rather than
     # assumed (M2-FR-12). If coverage is below 10% for a stratum these are
     # reported as uninformative rather than quietly included.

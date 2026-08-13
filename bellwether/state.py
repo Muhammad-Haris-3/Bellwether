@@ -39,6 +39,7 @@ EMPTY: dict[str, Any] = {
     "editor_first_seen": None,
     "page_edits_seen": 0,
     "page_edits_reverted": 0,
+    "max_user_id_seen": 0,
 }
 
 
@@ -88,6 +89,15 @@ def observe(state: dict[str, Any], event: dict[str, Any], *, was_reverted: bool 
     if was_reverted:
         page["reverted"] += 1
 
+    # The account-id frontier, folded in like everything else.
+    #
+    # Reading max(user_id) over the whole table instead would let an edit see
+    # accounts created after it — the leak the knowability guard exists to
+    # prevent, reintroduced through an aggregate rather than a column.
+    user_id = int(event.get("user_id") or 0)
+    if user_id > state.get("max_user_id", 0):
+        state["max_user_id"] = user_id
+
 
 def history_for(state: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
     """The history view for an event: everything folded in *before* it."""
@@ -100,6 +110,7 @@ def history_for(state: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
         "editor_first_seen": editor["first"] if editor else None,
         "page_edits_seen": page["edits"] if page else 0,
         "page_edits_reverted": page["reverted"] if page else 0,
+        "max_user_id_seen": state.get("max_user_id", 0),
         "event_ts": event["event_ts"],
     }
 

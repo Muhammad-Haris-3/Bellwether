@@ -171,6 +171,9 @@ SCHEMA_EXPECTATIONS = {
     "004_m1_gaps": ("SELECT to_regclass('landing.gap_attempts') IS NOT NULL AS present"),
     "006_m1_revert_events": ("SELECT to_regclass('outcome.revert_events') IS NOT NULL AS present"),
     "008_m2_evaluations": ("SELECT to_regclass('outcome.evaluations') IS NOT NULL AS present"),
+    "012_m3_pipeline_state": (
+        "SELECT to_regclass('landing.pipeline_state') IS NOT NULL AS present"
+    ),
     "011_m3_register": ("SELECT to_regclass('register.predictions') IS NOT NULL AS present"),
     "010_m2_importance": (
         "SELECT EXISTS (SELECT 1 FROM information_schema.columns"

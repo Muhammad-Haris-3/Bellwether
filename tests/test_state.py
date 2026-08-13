@@ -156,3 +156,68 @@ def test_replay_reports_coverage_per_stratum(fresh_db: None) -> None:
     assert coverage["scored"] == 6
     # Alice edits at positions 0, 2, 4 — the second and third see prior history.
     assert coverage["with_history"] == 2
+
+
+def test_the_id_frontier_is_folded_in_like_everything_else() -> None:
+    """M3-FR-2. Reading max(user_id) over the whole table would let an edit see
+    accounts created after it — the leak the guard exists to prevent,
+    reintroduced through an aggregate rather than a column."""
+    st: dict[str, Any] = {}
+    assert state.history_for(st, _event(1, minutes=0))["max_user_id_seen"] == 0
+
+    state.observe(st, {**_event(1, minutes=0), "user_id": 500})
+    assert state.history_for(st, _event(2, minutes=1))["max_user_id_seen"] == 500
+
+    state.observe(st, {**_event(2, minutes=1), "user_id": 100})
+    assert state.history_for(st, _event(3, minutes=2))["max_user_id_seen"] == 500
+
+
+def test_account_newness_does_not_move_as_the_frontier_does() -> None:
+    """The whole point of replacing log_user_id.
+
+    A brand-new account scores near 1 in any month and a veteran near 0 in any
+    month. The inputs keep rising; the feature does not — which is what makes
+    it survivable for a model that has to keep working next month.
+    """
+    august = features.build(
+        {**_event(1, minutes=0), "user_id": 1_000_000}, {"max_user_id_seen": 1_000_000}
+    )
+    september = features.build(
+        {**_event(1, minutes=0), "user_id": 2_000_000}, {"max_user_id_seen": 2_000_000}
+    )
+    assert august["account_newness"] == pytest.approx(september["account_newness"])
+
+    veteran_aug = features.build(
+        {**_event(1, minutes=0), "user_id": 10_000}, {"max_user_id_seen": 1_000_000}
+    )
+    veteran_sep = features.build(
+        {**_event(1, minutes=0), "user_id": 10_000}, {"max_user_id_seen": 2_000_000}
+    )
+    assert veteran_aug["account_newness"] > veteran_sep["account_newness"]
+    assert veteran_sep["account_newness"] < 0.02
+
+
+def test_account_newness_is_bounded_and_never_leaks_the_current_event() -> None:
+    """The frontier is the maximum seen STRICTLY BEFORE this event, so an event
+    carrying the highest id yet would otherwise exceed 1. Using a frontier that
+    included the event itself would be a one-row leak — small, and exactly the
+    kind nobody notices."""
+    vector = features.build(
+        {**_event(1, minutes=0), "user_id": 9_000_000}, {"max_user_id_seen": 1_000_000}
+    )
+    assert vector["account_newness"] == 1.0
+
+
+def test_account_newness_handles_an_ip_edit() -> None:
+    """A true IP edit has no user_id at all. is_logged_out already carries that
+    signal; this must not become a NaN on the way to the model."""
+    vector = features.build({**_event(1, minutes=0), "user_id": None}, {"max_user_id_seen": 500})
+    assert vector["account_newness"] == 0.0
+
+
+def test_log_user_id_is_gone() -> None:
+    """M3-FR-1. It was the most important feature in M2 and it drifts by
+    construction. Asserted so it cannot be quietly reinstated if the
+    replacement scores worse."""
+    assert "log_user_id" not in features.feature_names()
+    assert "account_newness" in features.feature_names()
