@@ -26,6 +26,10 @@ on:
         description: "Sample size, per cent of predictions in the window"
         required: false
         default: "5"
+      history_days:
+        description: "How far back to rebuild state (must exceed days)"
+        required: false
+        default: "30"
 
 concurrency:
   group: reproduce
@@ -57,7 +61,7 @@ jobs:
           set -o pipefail
           python -m bellwether.reproduce \
             --days "${{ inputs.days || '2' }}" \
-            --percent "${{ inputs.percent || '5' }}" 2>&1 | tee reproduce-output.txt
+            --percent "${{ inputs.percent || '5' }}"             --history-days "${{ inputs.history_days || '30' }}" 2>&1 | tee reproduce-output.txt
 
       - name: Surface the failure
         if: failure()
