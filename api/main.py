@@ -46,7 +46,11 @@ SELECT
     (SELECT count(*) FROM landing.rc_events)                                AS events,
     (SELECT count(*) FROM landing.rc_events WHERE sampling_stratum = 'logged_out')
                                                                             AS events_logged_out,
-    (SELECT count(*) FROM landing.rc_events WHERE 'mw-reverted' = ANY(tags)) AS reverted,
+    -- Ingestion-time tags. Useful only as a floor: rc_events is insert-only,
+    -- so for a live-ingested edit this array is frozen before any revert can
+    -- have happened. Named to say so.
+    (SELECT count(*) FROM landing.rc_events WHERE 'mw-reverted' = ANY(tags))
+                                                                            AS tagged_at_ingest,
     (SELECT count(*) FROM outcome.labels)                                   AS labels,
     (SELECT count(*) FROM outcome.label_checks)                             AS label_checks,
     -- Reverting edits are recorded for the whole feed, outside the sampling
@@ -101,14 +105,38 @@ SELECT count(*) FILTER (WHERE delta > interval '10 minutes')            AS gap_c
 # population, and the difference is large. Both are published, always. Choosing
 # whichever looked better per table would be exactly the sort of quiet
 # selection this project exists to make impossible.
+#
+# The outcome comes from outcome.labels, NOT from rc_events.tags.
+#
+# rc_events is insert-only — the writer role cannot UPDATE it — so the tag
+# array is frozen at the instant of ingestion. For an edit ingested seconds
+# after it was made, that array cannot contain `mw-reverted`, because the
+# revert had not happened yet. Scanning it counts reverts only for rows that
+# were BACKFILLED late enough to see them.
+#
+# The published matured rate therefore mixed two populations: backfilled rows,
+# where the tag was visible, and live rows, where it structurally never can be.
+# It read 22.04 per cent for logged-out editors while the checkpoint data put
+# the same figure at 38.21. The append-only guarantee that makes the register
+# trustworthy is exactly what made this number wrong.
 MATURE_SQL = """
+WITH matured AS (
+    SELECT e.revid, e.sampling_stratum, e.sampling_weight,
+           EXISTS (SELECT 1 FROM outcome.labels l
+                    WHERE l.revid = e.revid AND l.label) AS reverted
+      FROM landing.rc_events e
+     WHERE now() - e.event_ts >= interval '48 hours'
+       -- Only events whose outcome has actually been observed. An edit nobody
+       -- has checked is not a negative; counting it as one would understate
+       -- the rate for the same reason the frozen tag array did.
+       AND EXISTS (SELECT 1 FROM outcome.label_checks c WHERE c.revid = e.revid)
+)
 SELECT sampling_stratum,
-       count(*)                                          AS n,
-       count(*) FILTER (WHERE 'mw-reverted' = ANY(tags)) AS reverted,
-       sum(sampling_weight)                              AS weighted_n,
-       sum(sampling_weight) FILTER (WHERE 'mw-reverted' = ANY(tags)) AS weighted_reverted
-  FROM landing.rc_events
- WHERE now() - event_ts >= interval '48 hours'
+       count(*)                                     AS n,
+       count(*) FILTER (WHERE reverted)             AS reverted,
+       sum(sampling_weight)                         AS weighted_n,
+       sum(sampling_weight) FILTER (WHERE reverted) AS weighted_reverted
+  FROM matured
  GROUP BY sampling_stratum
  ORDER BY sampling_stratum
 """
@@ -298,7 +326,7 @@ def stats() -> dict[str, Any]:
         "totals": {
             "events": totals.get("events", 0),
             "events_logged_out": totals.get("events_logged_out", 0),
-            "reverted": totals.get("reverted", 0),
+            "tagged_at_ingest": totals.get("tagged_at_ingest", 0),
             "labels": totals.get("labels", 0),
             "label_checks": totals.get("label_checks", 0),
             "revert_events": totals.get("revert_events", 0),

@@ -45,7 +45,7 @@ type Stats = {
   totals: {
     events: number;
     events_logged_out: number;
-    reverted: number;
+    tagged_at_ingest: number;
     labels: number;
     label_checks: number;
     revert_events: number;
@@ -114,7 +114,9 @@ export default function Page() {
 
   const totals = stats?.totals;
   const overallRate =
-    totals && totals.events > 0 ? (totals.reverted / totals.events) * 100 : null;
+    totals && totals.events > 0
+      ? (totals.tagged_at_ingest / totals.events) * 100
+      : null;
 
   return (
     <main>
@@ -187,9 +189,10 @@ export default function Page() {
           <p className="note">
             {overallRate !== null && (
               <>
-                {overallRate.toFixed(2)}% of all ingested edits currently carry
-                a revert tag — a lower bound, since recent edits have not
-                finished being reverted.
+                {overallRate.toFixed(2)}% of ingested edits already carried a
+                revert tag when we first saw them. A floor, not a rate — the
+                tag array is frozen at ingestion, so for a live edit it cannot
+                yet know about a revert that has not happened.
               </>
             )}
           </p>
