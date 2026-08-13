@@ -154,6 +154,51 @@ SCHEMA_EXPECTATIONS = {
 }
 
 
+# The inputs to the maturity window (M2).
+#
+# Published because the maturity window decides which predictions are allowed
+# to count toward a published accuracy figure. A threshold that important
+# should be recomputable by a reader, not taken on trust.
+#
+# Two corrections are built into the query, and both matter:
+#
+#   * An event positive at one hour is still positive at six. The labelling job
+#     stops checking once an outcome is known, so a naive count of positives at
+#     each checkpoint would UNDER-count later ones — the events already known
+#     reverted are absent from the later checkpoint entirely. Cumulative
+#     incidence is therefore built from the FIRST checkpoint at which each
+#     event tested positive, not from per-checkpoint tallies.
+#
+#   * The denominator is events that actually reached that age, not all events.
+#     Counting a two-hour-old edit against the 48-hour checkpoint would treat
+#     "has not had time" as "was not reverted", which is precisely the
+#     right-censoring the whole maturity exercise exists to handle.
+MATURITY_SQL = """
+WITH per_event AS (
+    SELECT c.revid,
+           max(c.checkpoint_seconds)                                  AS reached,
+           min(c.checkpoint_seconds) FILTER (WHERE c.had_reverted_tag) AS first_positive,
+           bool_or(c.in_maturity_cohort)                              AS cohort,
+           max(e.sampling_stratum)                                    AS stratum
+      FROM outcome.label_checks c
+      LEFT JOIN landing.rc_events e ON e.revid = c.revid
+     GROUP BY c.revid
+),
+grid AS (SELECT DISTINCT checkpoint_seconds FROM outcome.label_checks)
+SELECT g.checkpoint_seconds,
+       COALESCE(p.stratum, 'unknown')                        AS stratum,
+       count(*) FILTER (WHERE p.reached >= g.checkpoint_seconds)          AS at_risk,
+       count(*) FILTER (WHERE p.reached >= g.checkpoint_seconds
+                          AND p.first_positive IS NOT NULL
+                          AND p.first_positive <= g.checkpoint_seconds)   AS reverted_by,
+       count(*) FILTER (WHERE p.cohort)                                    AS cohort_rows
+  FROM grid g
+ CROSS JOIN per_event p
+ GROUP BY g.checkpoint_seconds, COALESCE(p.stratum, 'unknown')
+ ORDER BY g.checkpoint_seconds, stratum
+"""
+
+
 def _schema_state(conn: psycopg.Connection[Any]) -> dict[str, bool]:
     state: dict[str, bool] = {}
     for name, sql in SCHEMA_EXPECTATIONS.items():
@@ -270,4 +315,43 @@ def stats() -> dict[str, Any]:
             }
             for row in runs
         ],
+    }
+
+
+@app.get("/maturity")
+def maturity() -> dict[str, Any]:
+    """Cumulative incidence of reverts by edit age, per stratum.
+
+    The raw material for the maturity window (SRS §11, `PREREGISTRATION.md` §6).
+    Published so the threshold that decides which predictions may count toward
+    an accuracy figure can be recomputed rather than believed.
+
+    `at_risk` counts only events that actually reached each age. `reverted_by`
+    counts those whose FIRST positive check was at or before it. Neither is a
+    per-checkpoint tally, and the difference is the whole point — see the
+    comment on MATURITY_SQL.
+    """
+    with _connect() as conn:
+        rows = conn.execute(MATURITY_SQL).fetchall()
+
+    return {
+        "checkpoints": [
+            {
+                "age_seconds": row["checkpoint_seconds"],
+                "age_hours": round(row["checkpoint_seconds"] / 3600, 2),
+                "stratum": row["stratum"],
+                "at_risk": row["at_risk"],
+                "reverted_by": row["reverted_by"],
+                "cumulative_incidence": (
+                    round(row["reverted_by"] / row["at_risk"], 5) if row["at_risk"] else None
+                ),
+                "cohort_rows": row["cohort_rows"],
+            }
+            for row in rows
+        ],
+        "note": (
+            "Cumulative incidence, not a per-checkpoint rate. An event reverted "
+            "by one hour is still reverted at six, but is no longer re-checked, "
+            "so per-checkpoint tallies under-count later ages."
+        ),
     }
