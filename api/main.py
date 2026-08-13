@@ -108,6 +108,15 @@ SELECT sampling_stratum,
 # time later. This makes the question "which migration does this database
 # actually have" answerable from outside, in one request.
 SCHEMA_EXPECTATIONS = {
+    "001_schema": (
+        "SELECT to_regclass('landing.rc_events') IS NOT NULL"
+        "   AND to_regclass('outcome.labels') IS NOT NULL AS present"
+    ),
+    "002_roles": (
+        "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bellwether_writer')"
+        "   AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bellwether_readonly')"
+        "    AS present"
+    ),
     "003_m1_frame": (
         "SELECT to_regclass('landing.tag_names') IS NOT NULL"
         "   AND EXISTS (SELECT 1 FROM information_schema.columns"
@@ -118,6 +127,15 @@ SCHEMA_EXPECTATIONS = {
         "                  AND column_name = 'in_maturity_cohort') AS present"
     ),
     "004_m1_gaps": ("SELECT to_regclass('landing.gap_attempts') IS NOT NULL AS present"),
+    "005_m1_retention": (
+        "SELECT to_regclass('outcome.seals') IS NOT NULL"
+        "   AND EXISTS (SELECT 1 FROM pg_proc p"
+        "                 JOIN pg_namespace n ON n.oid = p.pronamespace"
+        "                WHERE n.nspname = 'landing' AND p.proname = 'prune_expired')"
+        "   AND EXISTS (SELECT 1 FROM information_schema.columns"
+        "                WHERE table_schema = 'outcome' AND table_name = 'label_checks'"
+        "                  AND column_name = 'in_maturity_cohort') AS present"
+    ),
 }
 
 

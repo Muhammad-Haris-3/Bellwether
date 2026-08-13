@@ -140,3 +140,37 @@ def test_stats_reports_rates_only_over_matured_edits(client: TestClient, fresh_d
     assert "runs" in body
     for row in body["mature_48h"]:
         assert row["n"] > 0, "a rate must never be published without its sample size"
+
+
+def test_every_migration_has_a_health_expectation() -> None:
+    """The omission that made this test necessary.
+
+    Migration 005 was written, applied to production, and reported by /health
+    as... nothing at all. Not `false` — absent. `schema_behind` was empty and
+    the status was `ok`, because a check that does not exist cannot fail.
+
+    That is the same vacuous pass this project keeps finding, this time inside
+    the mechanism built to detect exactly this class of drift. A missing
+    expectation must break the build, not read as health.
+    """
+    from api.main import SCHEMA_EXPECTATIONS
+
+    migrations = {p.stem for p in (REPO / "sql").glob("*.sql")}
+    missing = migrations - SCHEMA_EXPECTATIONS.keys()
+    assert not missing, f"no /health expectation for: {sorted(missing)}"
+
+    stale = SCHEMA_EXPECTATIONS.keys() - migrations
+    assert not stale, f"expectation for a migration that no longer exists: {sorted(stale)}"
+
+
+@pytest.mark.db
+def test_health_confirms_every_migration_on_a_migrated_database(
+    client: TestClient, fresh_db: None
+) -> None:
+    """The fixture applies every migration, so a fully migrated database must
+    report every one present — otherwise the expectations are checking for
+    something the migrations do not actually create."""
+    body = client.get("/health").json()
+
+    assert body["schema_behind"] == []
+    assert all(body["schema"].values()), body["schema"]
