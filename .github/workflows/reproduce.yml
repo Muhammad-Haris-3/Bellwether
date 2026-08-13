@@ -61,7 +61,8 @@ jobs:
           set -o pipefail
           python -m bellwether.reproduce \
             --days "${{ inputs.days || '2' }}" \
-            --percent "${{ inputs.percent || '5' }}"             --history-days "${{ inputs.history_days || '30' }}" 2>&1 | tee reproduce-output.txt
+            --percent "${{ inputs.percent || '5' }}" \
+            --history-days "${{ inputs.history_days || '30' }}" 2>&1 | tee reproduce-output.txt
 
       - name: Surface the failure
         if: failure()
