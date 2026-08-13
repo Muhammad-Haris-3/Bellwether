@@ -177,6 +177,11 @@ SCHEMA_EXPECTATIONS = {
     "015_m3_reproducibility": (
         "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
     ),
+    "016_m3_reproduction_scope": (
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
+        "                WHERE table_schema = 'register' AND table_name = 'reproductions'"
+        "                  AND column_name = 'state_predates_window') AS present"
+    ),
     "013_m3_model_registry": (
         "SELECT to_regclass('register.model_registry') IS NOT NULL AS present"
     ),
@@ -569,7 +574,8 @@ SELECT count(*) AS known_before_scoring
 # page that averages them would hide the one that just started failing.
 REPRODUCTION_SQL = """
 SELECT ran_at, window_start, window_end, sampled, hash_matched, score_matched,
-       matched_at_scoring_time, unreproducible, model_versions, code_commit
+       matched_at_scoring_time, unreproducible, state_predates_window,
+       model_versions, code_commit
   FROM register.reproductions
  ORDER BY ran_at DESC
  LIMIT 1
@@ -650,11 +656,21 @@ def register_view() -> dict[str, Any]:
                 "score_matched": reproduction["score_matched"],
                 "matched_only_at_scoring_time": reproduction["matched_at_scoring_time"],
                 "unreproducible": reproduction["unreproducible"],
+                "state_predates_window": reproduction["state_predates_window"],
+                # Over what was checkable, and the denominator is published
+                # beside it. A job that drops what it cannot verify reports a
+                # clean rate over a shrinking base, which looks better every
+                # time it gets worse.
                 "agreement": (
-                    round(reproduction["hash_matched"] / reproduction["sampled"], 5)
-                    if reproduction["sampled"]
+                    round(
+                        reproduction["hash_matched"]
+                        / (reproduction["sampled"] - reproduction["state_predates_window"]),
+                        5,
+                    )
+                    if reproduction["sampled"] - reproduction["state_predates_window"]
                     else None
                 ),
+                "checkable": reproduction["sampled"] - reproduction["state_predates_window"],
                 "model_versions": reproduction["model_versions"],
                 "note": (
                     "A sample is re-derived daily from the raw events and must produce "

@@ -199,3 +199,59 @@ def test_a_revert_learned_between_the_edit_and_its_scoring_is_diagnosed(
     assert result["unreproducible"] == 0, "it IS reproducible, under the scorer's definition"
     assert result["matched_at_scoring_time"] == 1
     assert result["hash_matched"] == 0
+
+
+@pytest.mark.db
+def test_state_built_before_the_window_is_out_of_scope_not_a_failure(
+    fresh_db: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first production run's 5 failures, reproduced as a test.
+
+    The job replayed only the window it was checking, so an editor first seen
+    earlier carried persisted state the pass could never see. That prediction
+    did not fail to reproduce — the run had no business claiming to have
+    checked it, and the two are published separately because a job that
+    silently drops what it cannot verify reports a clean rate over a shrinking
+    denominator.
+    """
+    monkeypatch.setattr(registry, "MODELS_DIR", tmp_path)
+    path = tmp_path / "champion-scope.pkl"
+    path.write_bytes(pickle.dumps(ConstantModel(), protocol=5))
+    digest = registry.artifact_sha256(path)
+
+    revid = next(r for r in range(100, 5_000) if reproduce.sampled(r))
+
+    with connect() as conn:
+        _register(conn, "champion-scope", digest)
+        # Alice edited long before the replay window opens.
+        conn.execute(
+            """
+            INSERT INTO landing.rc_events
+                (revid, event_ts, ns, title, user_name, user_id, is_anon, is_temp,
+                 is_minor, is_bot, oldlen, newlen, tags, sampling_stratum,
+                 sampling_weight, ingested_at_utc)
+            VALUES (%s, now() - make_interval(days => 20), 0, 'Page', 'Alice', 500,
+                    false, false, false, false, 100, 120, '{}', 'registered', 33.3, now())
+            """,
+            (revid - 1,),
+        )
+        _event(conn, revid, minutes_ago=60)
+        conn.execute(
+            """
+            INSERT INTO register.predictions
+                (revid, event_ts, scored_at, model_version, role, score,
+                 feature_hash, outcome_observable_at_scoring)
+            VALUES (%s, now() - make_interval(mins => 60), now(), 'champion-scope',
+                    'champion', 0.7, %s, false)
+            """,
+            (revid, "a" * 64),
+        )
+
+    # A seven-day replay cannot see the 20-day-old edit that built Alice's state.
+    result = reproduce.run(days=2, history_days=7)
+    assert result["state_predates_window"] == 1
+    assert result["unreproducible"] == 0
+
+    # Reach back far enough and it becomes a real, and failing, check.
+    with pytest.raises(reproduce.ReproductionFailure):
+        reproduce.run(days=2, history_days=40)

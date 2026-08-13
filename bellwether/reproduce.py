@@ -48,6 +48,17 @@ SAMPLE_PERCENT = 5
 # The columns features.build reads, plus what the fold needs. Deliberately the
 # same shape score.py selects: a reproduction that reads different columns is
 # not a reproduction.
+# Whether anything by this editor, or on this page, happened before the replay
+# window began. If so, the persisted state the scorer read includes events this
+# pass cannot see, and the prediction is out of scope rather than wrong.
+PREDATES_SQL = """
+SELECT EXISTS (
+    SELECT 1 FROM landing.rc_events e
+     WHERE (e.user_name = %(user_name)s OR e.title = %(title)s)
+       AND e.event_ts < %(history_start)s
+) AS predates
+"""
+
 REPLAY_SQL = f"""
 SELECT e.revid, e.old_revid, e.event_ts, e.ns, e.title, e.user_name, e.user_id,
        e.is_anon, e.is_temp, e.is_minor, e.is_bot, e.comment, e.comment_hidden,
@@ -84,10 +95,11 @@ SELECT model_version, artifact_sha256 FROM register.model_registry
 INSERT_REPRODUCTION_SQL = """
 INSERT INTO register.reproductions
     (window_start, window_end, sampled, hash_matched, score_matched,
-     matched_at_scoring_time, unreproducible, model_versions, code_commit, run_id)
+     matched_at_scoring_time, unreproducible, state_predates_window,
+     model_versions, code_commit, run_id)
 VALUES (%(window_start)s, %(window_end)s, %(sampled)s, %(hash_matched)s,
         %(score_matched)s, %(matched_at_scoring_time)s, %(unreproducible)s,
-        %(model_versions)s, %(commit)s, %(run_id)s)
+        %(state_predates_window)s, %(model_versions)s, %(commit)s, %(run_id)s)
 """
 
 
@@ -121,13 +133,21 @@ def _load_models(conn: Any, versions: set[str]) -> dict[str, Any]:
     return models
 
 
-def run(*, days: int = 2, percent: int = SAMPLE_PERCENT) -> dict[str, Any]:
+def run(*, days: int = 2, percent: int = SAMPLE_PERCENT, history_days: int = 30) -> dict[str, Any]:
+    """`days` chooses which predictions to check. `history_days` chooses how far
+    back to rebuild the state that produced them, and the two are not the same
+    number. The first run conflated them and replayed only the window it was
+    checking, so any editor first seen earlier was guaranteed not to match.
+
+    The default reaches the raw retention horizon, which is as far back as the
+    events still exist to be replayed."""
     run_id = new_run_id()
     settings = get_settings()
     knowability.run_all()
 
     window_end = datetime.now(UTC)
     window_start = window_end - timedelta(days=days)
+    history_start = window_end - timedelta(days=max(history_days, days))
 
     with connect() as lock_conn, advisory_lock(lock_conn, REPRODUCE_LOCK_KEY) as acquired:
         if not acquired:
@@ -136,7 +156,7 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT) -> dict[str, Any]:
 
         with RunContext(run_id, job=JOB, window_from=window_start, window_to=window_end) as ctx:
             with connect() as conn, conn.cursor() as cur:
-                cur.execute(REPLAY_SQL, {"window_start": window_start, "window_end": window_end})
+                cur.execute(REPLAY_SQL, {"window_start": history_start, "window_end": window_end})
                 events = cur.fetchall()
 
             names = features.feature_names()
@@ -154,7 +174,11 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT) -> dict[str, Any]:
                         still.append((known_at, reverted))
                 pending = still
 
-                if event["feature_hash"] is not None and sampled(event["revid"], percent):
+                if (
+                    event["feature_hash"] is not None
+                    and event["event_ts"] >= window_start
+                    and sampled(event["revid"], percent)
+                ):
                     history = state.history_for(st, event)
                     vector = features.build(event, history)
                     checks.append({"event": event, "history": history, "vector": vector})
@@ -168,6 +192,7 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT) -> dict[str, Any]:
                 models = _load_models(conn, versions)
 
                 hash_matched = score_matched = late_matched = unreproducible = 0
+                out_of_scope = 0
                 for check in checks:
                     event, vector = check["event"], check["vector"]
                     if features.feature_hash(vector) == event["feature_hash"]:
@@ -177,6 +202,13 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT) -> dict[str, Any]:
                         matched_vector = _try_at_scoring_time(conn, check, names)
                         if matched_vector is not None:
                             late_matched += 1
+                        elif _predates(conn, event, history_start):
+                            # The scorer read state built from events this pass
+                            # never saw. Not a prediction that fails to
+                            # reproduce — one this run cannot claim to have
+                            # checked, and saying so is the difference between
+                            # a rate and a rate over a shrinking denominator.
+                            out_of_scope += 1
                         else:
                             unreproducible += 1
 
@@ -199,6 +231,7 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT) -> dict[str, Any]:
                             "score_matched": score_matched,
                             "matched_at_scoring_time": late_matched,
                             "unreproducible": unreproducible,
+                            "state_predates_window": out_of_scope,
                             "model_versions": sorted(versions),
                             "commit": settings.build_id,
                             "run_id": run_id,
@@ -210,11 +243,13 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT) -> dict[str, Any]:
             ctx.partial = unreproducible > 0
 
     total = len(checks)
-    rate = hash_matched / total if total else 1.0
+    checkable = total - out_of_scope
+    rate = hash_matched / checkable if checkable else 1.0
     print(f"reproduce: {total:,} of {len(events):,} predictions re-derived over {days}d")
     print(f"  feature hash matched          {hash_matched:>7,}  ({rate:.2%})")
     print(f"  matched only at scoring time  {late_matched:>7,}")
     print(f"  not reproducible either way   {unreproducible:>7,}")
+    print(f"  state predates the window     {out_of_scope:>7,}  (not checkable)")
     print(f"  score reproduced exactly      {score_matched:>7,}")
 
     if unreproducible:
@@ -227,12 +262,27 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT) -> dict[str, Any]:
 
     return {
         "sampled": total,
+        "state_predates_window": out_of_scope,
         "hash_matched": hash_matched,
         "matched_at_scoring_time": late_matched,
         "unreproducible": unreproducible,
         "score_matched": score_matched,
         "agreement": round(rate, 6),
     }
+
+
+def _predates(conn: Any, event: dict[str, Any], history_start: datetime) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            PREDATES_SQL,
+            {
+                "user_name": event["user_name"],
+                "title": event["title"],
+                "history_start": history_start,
+            },
+        )
+        row = cur.fetchone()
+    return bool(row and row["predates"])
 
 
 def _try_at_scoring_time(
@@ -271,8 +321,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, default=2)
     parser.add_argument("--percent", type=int, default=SAMPLE_PERCENT)
+    parser.add_argument("--history-days", type=int, default=30)
     args = parser.parse_args()
-    run(days=args.days, percent=args.percent)
+    run(days=args.days, percent=args.percent, history_days=args.history_days)
     return 0
 
 
