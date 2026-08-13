@@ -93,6 +93,7 @@ Finding those in week one is what M0 is for.
 | [Bellwether_M1_Summary.md](Bellwether_M1_Summary.md) | What M1 measured, including two contradictory clauses in the SRS |
 | [Bellwether_M2_Spec.md](Bellwether_M2_Spec.md) | The maturity window, the leakage traps, and the criterion that can end the project |
 | [Bellwether_M2_Summary.md](Bellwether_M2_Summary.md) | KC-2 cleared — and the ablation showing it rests on one drifting feature |
+| [Bellwether_M3_Spec.md](Bellwether_M3_Spec.md) | The prediction register, and fixing the drifting feature before deploying it |
 | [PREREGISTRATION.md](PREREGISTRATION.md) | The promotion rule, fixed before any model existed |
 
 ## Local setup
