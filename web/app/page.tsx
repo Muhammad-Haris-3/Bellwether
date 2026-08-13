@@ -2,7 +2,16 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
+// Trailing slashes are stripped rather than forbidden.
+//
+// `${base}/stats` with a base ending in "/" produces "//stats", which FastAPI
+// answers with a 404 — a failure that reads as "the API is broken" when the
+// API is fine and the environment variable has one extra character. Verified
+// against the deployed service: /stats returns 200 and //stats returns 404.
+//
+// The variable is inlined at build time, so getting it wrong costs a redeploy
+// to correct. Accepting both forms is cheaper than documenting one of them.
+const API = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").replace(/\/+$/, "");
 
 // Render's free tier stops the container after a quiet period, and the first
 // request afterwards waits for a cold start. Fifty seconds is not unusual.
@@ -43,6 +52,12 @@ type Stats = {
   mature_48h: Mature[];
   runs: Run[];
 };
+
+function statusClass(status: string) {
+  if (status === "success") return "ok";
+  if (status === "partial" || status === "running") return "warn";
+  return "bad";
+}
 
 function freshness(job: string, minutesAgo: number | null) {
   if (minutesAgo === null) return { cls: "muted", text: "never run" };
@@ -222,9 +237,15 @@ export default function Page() {
                   <tr key={run.job}>
                     <td>{run.job}</td>
                     <td className={f.cls}>{f.text}</td>
-                    <td className={run.status === "success" ? "ok" : "bad"}>
-                      {run.status}
-                    </td>
+                    {/*
+                      "partial" is a defined, healthy outcome — the labelling
+                      job reports it when some revisions have been deleted and
+                      cannot be labelled either way. Colouring anything that is
+                      not "success" as a failure turned a normal condition into
+                      a red alarm, which is the fastest way to teach someone to
+                      ignore the colour.
+                    */}
+                    <td className={statusClass(run.status)}>{run.status}</td>
                   </tr>
                 );
               })}
