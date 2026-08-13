@@ -278,7 +278,7 @@ and a `*/10` schedule running closer to hourly.
 | B-1 | The frame in §3 is applied, with stratum and weight recorded at observation time |
 | B-2 | Population-weighted and raw rates are both published, and differ as the frame predicts |
 | B-3 | Projected 90-day storage, computed from measured row sizes, sits below 400 MB |
-| B-4 | A deliberately introduced gap is detected and healed by the gap-fill job, not by the next ordinary run |
+| B-4 | **Verified 2026-08-14.** See §12 |
 | B-5 | The retention job deletes only what its dry run predicted, and nothing unsealed |
 | B-6 | A month is sealed, the seal committed, and a pruned month verifiable from git alone |
 | B-7 | Reverting edits are recorded outside the frame, and the secondary path's recall no longer depends on the sampling rate |
@@ -295,3 +295,39 @@ and a `*/10` schedule running closer to hourly.
 - Treating the revised frame as provisional. Once ingestion runs under it, the
   frame is part of every downstream estimate; changing it later invalidates
   comparisons across the change.
+
+
+---
+
+## 12. B-4 verified — the gap an ordinary run cannot reach
+
+M0 showed that an *outage* heals itself: the cursor never advanced past the
+hole, so the next run continued from where it stopped. B-4 asks for the harder
+case — a gap **behind** the cursor, which forward-only ingestion can never
+return to.
+
+Set up against live data: a contiguous window was ingested, the cursor left at
+05:27:54Z, and **149 rows deleted** from 04:00–04:30Z — well behind it.
+
+| Step | Result |
+|---|---|
+| Gap detected | 30.4 min, `03:59 → 04:30` |
+| **Ordinary ingest run** | +140 new events, cursor advanced to 05:58:10Z, **gap unchanged** |
+| **Gap-fill job** | 1 gap attempted, 1 healed, **149 rows recovered** |
+| Gaps afterwards | **none** |
+| Cursor after healing | **05:58:10Z — unmoved** |
+| Attempt logged | `rows_added 149, api_calls 4` |
+
+Three things this establishes, none of which the unit tests could:
+
+1. **An ordinary run genuinely cannot reach it.** It ran, ingested 140 events,
+   moved forward, and left the hole exactly as it found it. The gap-fill job is
+   not redundant with ingestion.
+2. **Recovery was exact — 149 rows deleted, 149 recovered.** Not approximately.
+   The frame is deterministic, so re-reading the same window re-selected the
+   identical sample, which is the reproducibility property `frame.py` claims,
+   demonstrated end to end rather than asserted.
+3. **Healing did not move the cursor.** It sat at 05:58:10Z before and after.
+   A healer that advanced it would have traded a 30-minute hole for a much
+   larger one, and the symptom would have been indistinguishable from the bug
+   it had just fixed.
