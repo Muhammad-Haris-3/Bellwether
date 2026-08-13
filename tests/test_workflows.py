@@ -15,7 +15,11 @@ import yaml
 
 WORKFLOWS = Path(__file__).resolve().parent.parent / ".github" / "workflows"
 
-SCHEDULED = {"ingest.yml": "*/10 * * * *", "label.yml": "*/30 * * * *"}
+SCHEDULED = {
+    "ingest.yml": "*/10 * * * *",
+    "label.yml": "*/30 * * * *",
+    "maintain.yml": "17 3 * * *",
+}
 
 
 def _load(name: str) -> dict[str, Any]:
@@ -82,3 +86,36 @@ def test_the_free_label_path_runs_even_when_ingestion_fails() -> None:
     steps = _load("ingest.yml")["jobs"]["ingest"]["steps"]
     secondary = next(s for s in steps if "label_secondary" in s.get("run", ""))
     assert secondary["if"] == "always()"
+
+
+def test_maintenance_seals_before_it_prunes() -> None:
+    """Order is the guard, not decoration.
+
+    The pruning function refuses evidence from an unsealed month, so a failure
+    while sealing stops the deletion instead of proceeding without the proof it
+    was supposed to leave behind. If retention ever ran first, that refusal
+    would be the only thing standing between a bug and unrecoverable loss.
+    """
+    steps = [s.get("name", "") for s in _load("maintain.yml")["jobs"]["maintain"]["steps"]]
+    verify = next(i for i, n in enumerate(steps) if "Verify" in n)
+    seal = next(i for i, n in enumerate(steps) if n == "Seal the previous month")
+    commit = next(i for i, n in enumerate(steps) if n == "Commit the seal")
+    prune = next(i for i, n in enumerate(steps) if n == "Retention")
+
+    assert verify < seal < commit < prune
+
+
+def test_retention_does_not_delete_on_a_manual_run_by_default() -> None:
+    """`inputs.apply` is the empty string on a scheduled run, so a negative
+    test on it would delete by accident on exactly the trigger that matters."""
+    steps = _load("maintain.yml")["jobs"]["maintain"]["steps"]
+    script = next(s["run"] for s in steps if s.get("name") == "Retention")
+
+    assert 'github.event_name }}" = "schedule"' in script
+    assert 'inputs.apply }}" = "true"' in script
+
+
+def test_maintenance_can_write_to_the_repository() -> None:
+    """A seal in a database is worth little; in public git history it is the
+    whole mechanism."""
+    assert _load("maintain.yml")["permissions"]["contents"] == "write"

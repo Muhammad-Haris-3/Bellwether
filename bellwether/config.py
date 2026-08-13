@@ -107,6 +107,20 @@ class Settings(BaseSettings):
     # excluded from coverage claims (M1-FR-14).
     gap_max_attempts: int = 3
 
+    # Evidence — labels now, predictions from M3 — outlives the raw material,
+    # but not indefinitely as SRS 6.5 assumed. It is sealed monthly into git
+    # first, so the proof survives the rows (M1 section 6).
+    evidence_retention_days: int = 90
+
+    # The maturity cohort's checkpoint grid is the survival study M2 estimates
+    # from. It is a tenth of the volume, so it can afford six months.
+    cohort_retention_days: int = 180
+
+    # Neon Free is 0.5 GB per project; NFR-4 caps usage at 80 percent of it.
+    # Expressed in bytes so the retention job can report against it rather than
+    # against a number in a document nobody re-reads.
+    storage_budget_bytes: int = 400_000_000
+
     # Beyond this age the wiki's own recentchanges table no longer holds the
     # window, so no number of retries can recover it. Conservative: Wikimedia
     # retains longer, and claiming a gap is permanent too early would hide a

@@ -1,0 +1,91 @@
+name: Maintain
+
+# Once a day. Nothing here is urgent, and everything here is irreversible.
+#
+# Order matters and is not negotiable: seal, commit the seal, then prune. The
+# pruning function refuses to delete evidence from an unsealed month, so a
+# failure at any earlier step stops the deletion rather than proceeding without
+# the proof it was supposed to leave behind.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Actually delete. Unticked, retention only reports."
+        type: boolean
+        default: false
+
+concurrency:
+  group: maintain
+  cancel-in-progress: false
+
+permissions:
+  # To commit seals/YYYY-MM.json. The seal is worth little in a database and a
+  # great deal in public git history, which is the whole mechanism.
+  contents: write
+
+jobs:
+  maintain:
+    name: Seal, then prune
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      BELLWETHER_DATABASE_URL: ${{ secrets.BELLWETHER_DATABASE_URL }}
+      BELLWETHER_ENV: production
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements-pipeline.txt
+
+      # Verify BEFORE sealing anything new. A month already sealed and since
+      # altered must be found now, while the mismatch still means something —
+      # after pruning, fewer rows is expected and the two are indistinguishable.
+      - name: Verify the previous month against its committed seal
+        run: python -m bellwether.seal --verify
+
+      - name: Seal the previous month
+        run: python -m bellwether.seal
+
+      - name: Commit the seal
+        run: |
+          if [ -z "$(git status --porcelain seals/)" ]; then
+            echo "no new seal to commit"
+            exit 0
+          fi
+          git config user.name  "bellwether-bot"
+          git config user.email "noreply@github.com"
+          git add seals/
+          git commit -m "Seal $(date -u +%Y-%m) evidence"
+          git push
+
+      # Only now. The function will refuse unsealed months regardless, but
+      # relying on that as the only guard would mean the ordering here was
+      # decoration.
+      # Scheduled runs prune; manual runs report unless explicitly told to.
+      # Written as a positive test on both triggers rather than a negative one
+      # on the input: `inputs.apply` is the empty string on a scheduled run, so
+      # `[ "$x" = "false" ]` would be false and the branch would delete by
+      # accident — the one outcome this job must never reach unintentionally.
+      - name: Retention
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.apply }}" = "true" ]; then
+            python -m bellwether.retention --apply
+          else
+            python -m bellwether.retention
+          fi
+
+      - name: Surface the failure
+        if: failure()
+        run: |
+          echo "::error title=maintain failed::Sealing or retention failed. No \
+          evidence is deleted from an unsealed month, so a failure here leaves \
+          data intact rather than half-pruned."
