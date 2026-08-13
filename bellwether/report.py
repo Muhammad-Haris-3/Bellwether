@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 
+from bellwether.config import get_settings
 from bellwether.db import fetch_all, fetch_one
 
 RULE = "=" * 72
@@ -39,9 +40,42 @@ def coverage() -> None:
         print("  no events ingested")
         return
     print(f"  events              {row['events']:,}")
-    print(f"  window              {row['oldest']}  ->  {row['newest']}")
+    print(f"  spans               {row['oldest']}  ->  {row['newest']}")
     print(f"  age of newest       {row['newest_age_h']} h")
     print(f"  age of oldest       {row['oldest_age_h']} h")
+
+    # "Spans", not "window" — and then the gaps, because they are not the same
+    # thing. A backfill of an old window plus a live slice spans three days
+    # while covering perhaps seven hours of them. Reporting only the endpoints
+    # would describe that as three days of history, and every rate computed
+    # over it would silently be a rate over two disjoint samples from different
+    # days.
+    gaps = fetch_one(
+        """
+        WITH ordered AS (
+            SELECT event_ts, lag(event_ts) OVER (ORDER BY event_ts) AS prev
+              FROM landing.rc_events
+        ),
+        steps AS (
+            SELECT event_ts - prev AS delta FROM ordered WHERE prev IS NOT NULL
+        )
+        SELECT count(*) FILTER (WHERE delta > interval '10 minutes')      AS gap_count,
+               COALESCE(max(delta), interval '0')                         AS largest_gap,
+               COALESCE(sum(delta) FILTER (WHERE delta > interval '10 minutes'),
+                        interval '0')                                     AS missing
+          FROM steps
+        """,
+        readonly=True,
+    )
+    if gaps:
+        # round() in SQL returns numeric, which arrives as Decimal, and
+        # timedelta.total_seconds() is a float. Mixing them raises rather than
+        # coercing, so both sides become float explicitly.
+        spanned_h = float(row["oldest_age_h"]) - float(row["newest_age_h"])
+        covered_h = spanned_h - gaps["missing"].total_seconds() / 3600.0
+        print(f"  gaps over 10 min    {gaps['gap_count']}")
+        print(f"  largest gap         {gaps['largest_gap']}")
+        print(f"  hours covered       {covered_h:.1f} of {spanned_h:.1f} spanned")
 
 
 def revert_rate_by_maturity() -> None:
@@ -180,47 +214,64 @@ def path_agreement() -> None:
     """
     _section("FR-11  LABEL PATH AGREEMENT")
 
-    # Restricted to edits the primary path has actually looked at.
+    # Restricted to edits BOTH paths could have seen.
     #
-    # Comparing over everything ingested counts "the primary path has not got
-    # there yet" as disagreement, which makes the two paths look like they
-    # contradict each other when they have simply not both spoken. That
-    # comparison would understate agreement by whatever fraction of the backlog
-    # is unchecked, and the fraction changes every run — so the figure would
-    # drift for reasons that have nothing to do with either path.
+    # Two separate coverage limits, and leaving either one out inverts the
+    # conclusion:
+    #
+    #   * The primary path works a queue, so an edit it has not reached yet is
+    #     not disagreement — it has not spoken.
+    #   * The secondary path only scans back `secondary_lookback_hours`, so any
+    #     edit older than that was never examined. Counting those as misses
+    #     made a backfill of three-day-old data look like the secondary path
+    #     had 3% recall, when in fact it had never been shown the data at all.
+    #
+    # The first version of this section restricted on the primary only, and
+    # reported 281 "primary only" against 8 agreed — a damning number about a
+    # path that was not running.
+    lookback = get_settings().secondary_lookback_hours
     row = fetch_one(
         """
-        WITH checked AS (SELECT DISTINCT revid FROM outcome.label_checks),
+        WITH comparable AS (
+            SELECT DISTINCT c.revid
+              FROM outcome.label_checks c
+              JOIN landing.rc_events e USING (revid)
+             WHERE e.event_ts >= now() - make_interval(hours => %(lookback)s)
+        ),
              p AS (SELECT revid FROM outcome.labels
                     WHERE label_source = 'mw_reverted' AND label),
              s AS (SELECT revid FROM outcome.labels
                     WHERE label_source = 'revert_tag'  AND label)
-        SELECT (SELECT count(*) FROM checked)                          AS checked,
-               (SELECT count(*) FROM p JOIN checked USING (revid))     AS primary_pos,
-               (SELECT count(*) FROM s JOIN checked USING (revid))     AS secondary_pos,
+        SELECT (SELECT count(*) FROM comparable)                          AS comparable,
+               (SELECT count(*) FROM p JOIN comparable USING (revid))     AS primary_pos,
+               (SELECT count(*) FROM s JOIN comparable USING (revid))     AS secondary_pos,
                (SELECT count(*) FROM p JOIN s USING (revid)
-                                       JOIN checked USING (revid))     AS both,
-               (SELECT count(*) FROM p JOIN checked USING (revid)
-                 WHERE revid NOT IN (SELECT revid FROM s))             AS primary_only,
-               (SELECT count(*) FROM s JOIN checked USING (revid)
-                 WHERE revid NOT IN (SELECT revid FROM p))             AS secondary_only,
-               (SELECT count(*) FROM s
-                 WHERE revid NOT IN (SELECT revid FROM checked))       AS secondary_unchecked
+                                       JOIN comparable USING (revid))     AS both,
+               (SELECT count(*) FROM p JOIN comparable USING (revid)
+                 WHERE revid NOT IN (SELECT revid FROM s))                AS primary_only,
+               (SELECT count(*) FROM s JOIN comparable USING (revid)
+                 WHERE revid NOT IN (SELECT revid FROM p))                AS secondary_only,
+               (SELECT count(*) FROM outcome.label_checks c
+                  JOIN landing.rc_events e USING (revid)
+                 WHERE e.event_ts < now() - make_interval(hours => %(lookback)s)
+               )                                                          AS outside_secondary
         """,
+        {"lookback": lookback},
         readonly=True,
     )
-    if not row or not row["checked"]:
-        print("  no edits checked by the primary path yet")
+    if not row or not row["comparable"]:
+        print(f"  no edits inside both paths' coverage yet (secondary sees {lookback}h)")
         return
 
-    print(f"  edits checked by both paths             {row['checked']:>8,}")
+    print(f"  comparable edits (checked, and under {lookback}h old)  {row['comparable']:>7,}")
     print(f"  positive, primary (mw-reverted)         {row['primary_pos']:>8,}")
     print(f"  positive, secondary (revert tags)       {row['secondary_pos']:>8,}")
     print(f"  agreed by both                          {row['both']:>8,}")
     print(f"  primary only                            {row['primary_only']:>8,}")
     print(f"  secondary only                          {row['secondary_only']:>8,}")
-    print(f"\n  secondary positives not yet checked     {row['secondary_unchecked']:>8,}")
-    print("  (excluded above — not disagreement, just an unfinished queue)")
+    print(f"\n  checked but older than {lookback}h          {row['outside_secondary']:>8,}")
+    print("  (excluded — the secondary path never scanned them, so counting")
+    print("   them as misses would measure its lookback, not its recall)")
     if row["secondary_only"]:
         print(
             "\n  Secondary-only positives are expected: the reverting edit is\n"
