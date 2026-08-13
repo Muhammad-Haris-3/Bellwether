@@ -60,12 +60,26 @@ def fresh_db(db_url: str) -> Iterator[None]:
 
     apply_all()
     with connect() as conn:
-        # tag_names is included deliberately. Leaving it out let the dimension
-        # carry rows between tests, so a test asserting "one tag exists" passed
-        # or failed depending on which tests had run before it.
-        conn.execute(
-            "TRUNCATE outcome.labels, outcome.label_checks, landing.rc_events, "
-            "landing.tag_names, landing.cursors, landing.run_log "
-            "RESTART IDENTITY CASCADE"
-        )
+        # Every table in both schemas, discovered rather than listed.
+        #
+        # A hand-maintained list has now silently rotted twice: tag_names and
+        # then gap_attempts were each added without being added here, and each
+        # time a test asserting "one row exists" passed or failed depending on
+        # which tests had run before it. That is a bad failure — it is not
+        # deterministic, and it accuses the wrong code.
+        #
+        # quote_ident rather than format('%I.%I', ...): psycopg reads a bare
+        # per-cent as the start of a placeholder, even inside SQL that is only
+        # building a string.
+        tables = conn.execute(
+            """
+            SELECT quote_ident(table_schema) || '.' || quote_ident(table_name) AS t
+              FROM information_schema.tables
+             WHERE table_schema IN ('landing', 'outcome')
+               AND table_type = 'BASE TABLE'
+            """
+        ).fetchall()
+        if tables:
+            names = ", ".join(row["t"] for row in tables)
+            conn.execute(f"TRUNCATE {names} RESTART IDENTITY CASCADE")  # noqa: S608
     yield
