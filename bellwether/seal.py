@@ -54,6 +54,16 @@ SEALED: dict[str, dict[str, str]] = {
         "time_column": "first_observed_at_utc",
         "order_by": "revid, label_source",
     },
+    # Predictions are evidence from their first row. A score pruned without a
+    # seal leaves no proof it was ever made, which would undo M3 entirely.
+    "register.predictions": {
+        "columns": (
+            "revid, event_ts, scored_at, model_version, role, score, "
+            "feature_hash, outcome_observable_at_scoring"
+        ),
+        "time_column": "scored_at",
+        "order_by": "revid, model_version, role",
+    },
 }
 
 

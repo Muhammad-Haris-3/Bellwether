@@ -60,13 +60,19 @@ def fresh_db(db_url: str) -> Iterator[None]:
 
     apply_all()
     with connect() as conn:
-        # Every table in both schemas, discovered rather than listed.
+        # Every table in every schema this project owns, discovered rather
+        # than listed — and the SCHEMAS are discovered too.
         #
-        # A hand-maintained list has now silently rotted twice: tag_names and
-        # then gap_attempts were each added without being added here, and each
-        # time a test asserting "one row exists" passed or failed depending on
-        # which tests had run before it. That is a bad failure — it is not
-        # deterministic, and it accuses the wrong code.
+        # This list has now rotted three times. First tag_names, then
+        # gap_attempts, each added to the schema without being added here. The
+        # fix then was to discover tables instead of naming them — but the
+        # schemas stayed hard-coded, so when M3 added `register` the whole
+        # schema leaked between tests and eight of them failed on a unique
+        # constraint that had nothing to do with what they were testing.
+        #
+        # Excluding the system schemas by name is the only stable version of
+        # this: new project schemas are included automatically, and there is
+        # nothing left to forget to update.
         #
         # quote_ident rather than format('%I.%I', ...): psycopg reads a bare
         # per-cent as the start of a placeholder, even inside SQL that is only
@@ -75,7 +81,8 @@ def fresh_db(db_url: str) -> Iterator[None]:
             """
             SELECT quote_ident(table_schema) || '.' || quote_ident(table_name) AS t
               FROM information_schema.tables
-             WHERE table_schema IN ('landing', 'outcome')
+             WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'public')
+               AND table_schema NOT LIKE 'pg_%%'
                AND table_type = 'BASE TABLE'
             """
         ).fetchall()

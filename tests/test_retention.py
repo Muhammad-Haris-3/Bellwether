@@ -186,7 +186,11 @@ def test_a_seal_digest_changes_when_a_row_changes(fresh_db: None) -> None:
         conn.execute("UPDATE outcome.labels SET detection_latency_seconds = 9999 WHERE revid = 1")
         second, _ = seal.compute_digest(conn, month)
 
-    assert counts == {"outcome.labels": 1}
+    # Asserted per table rather than as an exact dict: the sealed set grows
+    # with the project, and a test that breaks whenever evidence is ADDED
+    # to the seal is a test that discourages sealing things.
+    assert counts["outcome.labels"] == 1
+    assert "register.predictions" in counts
     assert first != second
 
 
@@ -208,7 +212,8 @@ def test_sealing_writes_a_committable_file(fresh_db: None, tmp_path: Any) -> Non
 
     payload = seal.seal_month(month, write=False)
     assert payload["algorithm"] == "sha256"
-    assert payload["row_counts"] == {"outcome.labels": 1}
+    assert payload["row_counts"]["outcome.labels"] == 1
+    assert "register.predictions" in payload["row_counts"]
     assert len(payload["digest"]) == 64
     json.dumps(payload)  # must be serialisable exactly as committed
 
