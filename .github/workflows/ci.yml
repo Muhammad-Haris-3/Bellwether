@@ -72,6 +72,12 @@ jobs:
           python -m bellwether.migrate
           BELLWETHER_DATABASE_URL="$BELLWETHER_TEST_DATABASE_URL" python -m bellwether.migrate
 
+      # Before the tests, and loudly. A leaky feature does not raise on its
+      # own: it produces a model that scores beautifully in backtest and is
+      # worthless deployed, and the gap is found weeks later if at all.
+      - name: Knowability guard
+        run: python -m bellwether.knowability
+
       - name: Tests, including the append-only guarantees
         run: |
           set -o pipefail
