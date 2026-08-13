@@ -35,6 +35,11 @@ jobs:
 
     env:
       BELLWETHER_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bellwether
+      # The db tests truncate every table, so they refuse to run against
+      # BELLWETHER_DATABASE_URL and require this separate opt-in. In CI the
+      # service container is disposable, so the two point at the same server —
+      # but at different databases, so the guard stays meaningful here too.
+      BELLWETHER_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bellwether_test
       BELLWETHER_ENV: ci
 
     steps:
@@ -59,8 +64,13 @@ jobs:
       - name: Type check
         run: mypy bellwether
 
+      - name: Create the disposable test database
+        run: psql "$BELLWETHER_DATABASE_URL" -c 'CREATE DATABASE bellwether_test'
+
       - name: Apply schema and grants
-        run: python -m bellwether.migrate
+        run: |
+          python -m bellwether.migrate
+          BELLWETHER_DATABASE_URL="$BELLWETHER_TEST_DATABASE_URL" python -m bellwether.migrate
 
       - name: Tests, including the append-only guarantees
         run: |

@@ -17,10 +17,33 @@ def _clear_settings_cache() -> Iterator[None]:
 
 
 @pytest.fixture
-def db_url() -> str:
-    url = os.environ.get("BELLWETHER_DATABASE_URL", "")
+def db_url(monkeypatch: pytest.MonkeyPatch) -> str:
+    """A database the tests are allowed to destroy.
+
+    Deliberately a SEPARATE variable from BELLWETHER_DATABASE_URL. The db tests
+    truncate every table, and pointing them at the working database wipes
+    hours of ingested history — which is exactly what happened once, silently,
+    because a green test run and a wiped database look identical from the
+    terminal.
+
+    Skipping when it is unset is the safe default: a developer who has not
+    opted in gets no db coverage rather than an empty database.
+    """
+    url = os.environ.get("BELLWETHER_TEST_DATABASE_URL", "")
     if not url:
-        pytest.skip("BELLWETHER_DATABASE_URL not set")
+        pytest.skip("BELLWETHER_TEST_DATABASE_URL not set (db tests are destructive)")
+
+    if url == os.environ.get("BELLWETHER_DATABASE_URL"):
+        pytest.fail(
+            "BELLWETHER_TEST_DATABASE_URL is the same as BELLWETHER_DATABASE_URL. "
+            "The db tests truncate every table; they must not point at the "
+            "working database."
+        )
+
+    # Every module under test resolves its connection through Settings, so
+    # redirecting here covers the whole suite rather than each call site.
+    monkeypatch.setenv("BELLWETHER_DATABASE_URL", url)
+    get_settings.cache_clear()
     return url
 
 
@@ -29,8 +52,8 @@ def fresh_db(db_url: str) -> Iterator[None]:
     """Apply the schema and truncate the M0 tables.
 
     Truncation runs as the owner, not as bellwether_writer — the writer role is
-    specifically forbidden from doing this, and a fixture that needed the
-    privilege it is meant to be testing the absence of would be circular.
+    specifically forbidden from doing this, and a fixture needing the very
+    privilege it exists to prove absent would be circular.
     """
     from bellwether.db import connect
     from bellwether.migrate import apply_all

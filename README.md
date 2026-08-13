@@ -56,13 +56,22 @@ Measured against the live API on 2026-08-13:
 
 | Finding | Value |
 |---|---|
-| `mw-reverted` visible on previously ingested edits | Yes — 128 of 4,000 in a 5–6 hour window |
-| Revert rate, logged-out editors | **19.1%** (n=392, ~5h maturity, a lower bound) |
-| Revert rate, registered editors | **1.5%** (n=3,608) |
+| `mw-reverted` retrievable for previously ingested edits | **Yes** — the loop closes. KC-1 retired |
+| Revert rate, logged-out editors | **21.2%** (n=538, 6–24h maturity, a lower bound) |
+| Revert rate, registered editors | **1.6%** (n=4,462) |
 | Main-namespace non-bot edit volume | ~62/minute, ≈ 90k/day |
 | Logged-out editors identifiable by `anon` | **No** — English Wikipedia uses temporary accounts; `anon` was set on 0 of 2,498 edits |
+| Secondary label path, precision | **100%** — 6 of 6 agreed with the primary path |
+| Secondary label path, recall | **~19%** — 6 of 32. Conservative by design; the gap is measured, not assumed |
 
-That last row changed the sampling frame during M0, which is what M0 is for.
+Two of those rows changed the design rather than confirming it. The temporary
+accounts finding rewrote the sampling frame — a frame keyed on `anon` would
+have sampled away most of the positive class before training began. And undo
+summaries turned out to name their target as `[[Special:Diff/N|N]]` rather than
+a bare number, so the first parser derived nothing from 97 of 97 undos while
+reporting a clean run.
+
+Finding those in week one is what M0 is for.
 
 ## Documents
 

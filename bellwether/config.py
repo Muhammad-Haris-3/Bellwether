@@ -76,6 +76,20 @@ class Settings(BaseSettings):
     # cursor as far as it got and the next run continues.
     max_pages_per_run: int = 40
 
+    # Bounds one labelling run the same way. 2,000 (revid, checkpoint) pairs is
+    # at most 40 requests at 50 revids each — about a minute at the self-imposed
+    # rate ceiling, leaving ample headroom inside the workflow budget.
+    #
+    # This is knowingly below what a full checkpoint grid over ~90k edits/day
+    # would need. M0 is measuring, not keeping up; the sustainable cadence is
+    # M1's problem and VER-5 already found the cheaper path it will use.
+    max_label_checks_per_run: int = 2_000
+
+    # How far back the secondary label path re-derives on each run. It costs no
+    # API calls at all — it reads tags already ingested — so the window is
+    # generous, and overlapping runs are absorbed by the unique constraint.
+    secondary_lookback_hours: int = 48
+
     @field_validator("env")
     @classmethod
     def _reject_anything_that_is_not_a_label(cls, value: str) -> str:
