@@ -9,14 +9,20 @@ on your own machine, where the full error is not a publication.
 Everything it prints is safe to share. The password is masked wherever it
 appears, including inside the driver's error message.
 
-Usage:
+Usage — run it with NO arguments and paste the string at the prompt:
 
-    python scripts/check_connection.py "postgresql://user:pw@host/db?sslmode=require"
+    python scripts/check_connection.py
+
+The prompt does not echo, so the string never reaches your shell history, your
+terminal scrollback, or a screenshot. Passing it as an argument still works and
+is still accepted, because a script that refuses the obvious invocation gets
+worked around rather than used.
 """
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import sys
 from urllib.parse import urlsplit
 
@@ -33,10 +39,19 @@ def mask(text: str, secret: str | None) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("url")
+    parser.add_argument(
+        "url",
+        nargs="?",
+        help="Connection string. Omit it to be prompted without echo, which is safer.",
+    )
     args = parser.parse_args()
 
-    parts = urlsplit(args.url)
+    url = args.url or getpass.getpass("Connection string (input hidden): ").strip()
+    if not url:
+        print("No connection string given.")
+        return 2
+
+    parts = urlsplit(url)
     password = parts.password
     host = parts.hostname or ""
 
@@ -62,9 +77,24 @@ def main() -> int:
     else:
         print(f"  {YELLOW}WARN{RESET} role is '{parts.username}', not one of the two app roles")
 
+    # The failure this catches actually happened: the owner's password was
+    # pasted alongside an app role's username, and the only symptom was
+    # "password authentication failed" — which reads as a wrong password rather
+    # than as the wrong password.
+    #
+    # Neon issues owner passwords with an npg_ prefix. Both app roles get
+    # secrets.token_urlsafe(24) from the bootstrap script, which never does.
+    if parts.username in {"bellwether_readonly", "bellwether_writer"} and (
+        password or ""
+    ).startswith("npg_"):
+        print(f"  {RED}FAIL{RESET} this is the OWNER's password on an app role's username")
+        print("       npg_ is Neon's own format for neondb_owner. The app roles")
+        print("       get their passwords from scripts/bootstrap_database.py")
+        print("       --rotate-passwords, and they never start with npg_.")
+
     print("\nConnecting")
     try:
-        with psycopg.connect(args.url, connect_timeout=15) as conn:
+        with psycopg.connect(url, connect_timeout=15) as conn:
             row = conn.execute(
                 "SELECT current_user AS usr, current_database() AS db, version() AS v"
             ).fetchone()
