@@ -82,7 +82,11 @@ def verify(model_version: str, expected_sha256: str) -> Path:
 
 
 CHAMPION_SQL = """
-SELECT model_version, artifact_sha256, feature_names, offline_metrics, trained_at
+-- training_start and training_end travel with the champion because the scorer
+-- refuses to score inside them: the register measures out-of-sample behaviour
+-- or it measures nothing.
+SELECT model_version, artifact_sha256, feature_names, offline_metrics, trained_at,
+       training_start, training_end
   FROM register.model_registry
  ORDER BY trained_at DESC, model_version DESC
  LIMIT 1

@@ -67,6 +67,16 @@ SELECT e.revid, e.old_revid, e.event_ts, e.ns, e.title, e.user_name, e.user_id,
               AND p.model_version = %(model_version)s
               AND p.role = 'champion')
    AND e.event_ts >= now() - make_interval(days => %(lookback_days)s)
+   -- Never score what the champion was fitted to.
+   --
+   -- The lookback window and the training window are set independently and
+   -- nothing stopped them overlapping. Where they do, the scorer would write
+   -- predictions on edits the model has memorised into the register that exists
+   -- to measure how it does on edits it has never seen. This champion scores
+   -- 0.686 PR-AUC in-sample against 0.256 out-of-sample, so the contamination
+   -- would not be subtle. It has not happened yet only because an ingestion gap
+   -- happens to sit between the two windows, which is luck, not a guarantee.
+   AND NOT (e.event_ts >= %(training_start)s AND e.event_ts < %(training_end)s)
  ORDER BY e.event_ts, e.revid
  LIMIT %(limit)s
 """
@@ -106,7 +116,13 @@ def run(*, limit: int = 5_000, lookback_days: int = 3) -> dict[str, Any]:
         with connect() as conn, conn.cursor() as cur:
             cur.execute(
                 UNSCORED_SQL,
-                {"model_version": version, "limit": limit, "lookback_days": lookback_days},
+                {
+                    "model_version": version,
+                    "limit": limit,
+                    "lookback_days": lookback_days,
+                    "training_start": champion["training_start"],
+                    "training_end": champion["training_end"],
+                },
             )
             events = cur.fetchall()
 

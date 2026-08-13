@@ -323,6 +323,42 @@ def test_a_label_observed_after_scoring_is_a_real_prediction(
 
 
 @pytest.mark.db
+def test_edits_the_champion_was_trained_on_are_never_scored(
+    fresh_db: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The register measures out-of-sample behaviour or it measures nothing.
+
+    The lookback window and the training window are set independently, and
+    where they overlap the scorer would file predictions on edits the model has
+    memorised. This champion scores 0.686 in-sample against 0.256 out-of-sample,
+    so the contamination would not be subtle.
+    """
+    from bellwether import score
+
+    monkeypatch.setattr(registry, "MODELS_DIR", tmp_path)
+    path = tmp_path / "champion-window.pkl"
+    path.write_bytes(pickle.dumps(ConstantModel(0.5), protocol=5))
+    digest = registry.artifact_sha256(path)
+
+    with connect() as conn:
+        # _register trains on [NOW - 2 days, NOW - 1 day). In minutes-ago terms
+        # that is everything between 2,880 and 1,440 minutes back.
+        _event(conn, 1, minutes_ago=2_000)  # inside the training window
+        _event(conn, 2, minutes_ago=1_000)  # after it
+        _register(conn, "champion-window", digest)
+        conn.execute(
+            "UPDATE register.model_registry SET training_start = now() - interval '2 days', "
+            "training_end = now() - interval '1 day' WHERE model_version = 'champion-window'"
+        )
+
+    assert score.run(limit=100, lookback_days=7)["scored"] == 1
+
+    with connect() as conn:
+        rows = conn.execute("SELECT revid FROM register.predictions").fetchall()
+    assert [r["revid"] for r in rows] == [2]
+
+
+@pytest.mark.db
 def test_the_scorer_refuses_without_a_registered_model(fresh_db: None) -> None:
     from bellwether import score
 
