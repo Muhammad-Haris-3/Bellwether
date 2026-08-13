@@ -272,6 +272,7 @@ def test_the_register_reports_scores_written_after_their_outcome(
     from bellwether.db import connect
 
     now = datetime(2026, 8, 14, 12, tzinfo=UTC)
+    scored_at = now + timedelta(minutes=20)
     with connect() as conn:
         for revid, late in ((1, False), (2, True)):
             conn.execute(
@@ -281,11 +282,81 @@ def test_the_register_reports_scores_written_after_their_outcome(
                      feature_hash, outcome_observable_at_scoring)
                 VALUES (%s, %s, %s, 'v1', 'champion', 0.5, 'h', %s)
                 """,
-                (revid, now, now + timedelta(minutes=20), late),
+                (revid, now, scored_at, late),
             )
 
     body = client.get("/register").json()
     assert body["predictions"] == 2
-    assert body["scored_after_outcome_was_observable"]["count"] == 1
-    assert body["scored_after_outcome_was_observable"]["share"] == 0.5
+    assert body["scored_after_outcome_was_observable"]["flagged_by_the_scorer_at_write_time"] == 1
     assert body["scoring_lag_minutes"]["p50"] == 20.0
+
+
+@pytest.mark.db
+def test_the_register_recounts_late_scores_against_what_is_known_now(
+    client: TestClient, fresh_db: None
+) -> None:
+    """The stored flag can only ever understate.
+
+    Outcomes keep arriving after a score is written, and register.predictions
+    has no UPDATE grant — that is the point of it — so a row flagged false at
+    write time stays false however wrong it turns out to be. The published
+    figure is recomputed on read, against p.scored_at rather than now(): did we
+    hold this answer at the moment we claimed to be predicting it?
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from bellwether.db import connect
+
+    now = datetime(2026, 8, 14, 12, tzinfo=UTC)
+    scored_at = now + timedelta(minutes=20)
+
+    with connect() as conn:
+        for revid in (1, 2):
+            conn.execute(
+                """
+                INSERT INTO landing.rc_events
+                    (revid, event_ts, ns, title, user_name, user_id, is_anon,
+                     is_temp, is_minor, is_bot, oldlen, newlen, tags,
+                     sampling_stratum, sampling_weight, ingested_at_utc)
+                VALUES (%s, %s, 0, 'Page', 'Alice', 5, false, false, false,
+                        false, 100, 120, '{}', 'registered', 33.3, %s)
+                """,
+                (revid, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO register.predictions
+                    (revid, event_ts, scored_at, model_version, role, score,
+                     feature_hash, outcome_observable_at_scoring)
+                VALUES (%s, %s, %s, 'v1', 'champion', 0.5, 'h', false)
+                """,
+                (revid, now, scored_at),
+            )
+
+        # revid 1: we already held the answer 5 minutes BEFORE scoring, and the
+        # scorer recorded false. This is the case the old guard missed entirely,
+        # because a mw-reverted label produces no revert_events row.
+        conn.execute(
+            """
+            INSERT INTO outcome.labels
+                (revid, label, label_source, first_observed_at_utc,
+                 detection_latency_seconds)
+            VALUES (1, true, 'mw_reverted', %s, 900)
+            """,
+            (scored_at - timedelta(minutes=5),),
+        )
+        # revid 2: the answer arrived an hour AFTER scoring. A real prediction.
+        conn.execute(
+            """
+            INSERT INTO outcome.labels
+                (revid, label, label_source, first_observed_at_utc,
+                 detection_latency_seconds)
+            VALUES (2, true, 'mw_reverted', %s, 900)
+            """,
+            (scored_at + timedelta(hours=1),),
+        )
+
+    late = client.get("/register").json()["scored_after_outcome_was_observable"]
+    assert late["flagged_by_the_scorer_at_write_time"] == 0
+    assert late["count"] == 1
+    assert late["share"] == 0.5

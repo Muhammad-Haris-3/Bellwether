@@ -36,13 +36,29 @@ SELECT e.revid, e.old_revid, e.event_ts, e.ns, e.title, e.user_name, e.user_id,
        e.is_anon, e.is_temp, e.is_minor, e.is_bot, e.comment, e.comment_hidden,
        e.oldlen, e.newlen, e.tags, e.sampling_stratum,
        (e.tags && ARRAY['mw-undo','mw-rollback','mw-manual-revert']) AS is_reverting,
-       -- M3-FR-10. Was a revert for this edit ALREADY visible when we got here?
+       -- M3-FR-10. Was this edit's outcome ALREADY available when we got here?
        --
        -- If the scorer falls far enough behind it will eventually score an edit
        -- that has already been reverted. Nothing raises. The score is simply
        -- trivially correct and accuracy improves for the worst possible reason.
-       EXISTS (SELECT 1 FROM outcome.revert_events r
-                WHERE r.reverted_revid = e.revid AND r.revert_ts <= now())
+       --
+       -- Two DIFFERENT ways that happens, so both limbs are checked:
+       --
+       --   revert_events  the revert HAPPENED before we scored, whether or not
+       --                  we knew. Information about it could have reached the
+       --                  features through page and editor state.
+       --   labels         we ALREADY HELD the answer. Nothing is being
+       --                  predicted; the row is a lookup wearing a score.
+       --
+       -- Only the first was checked until now, and it covers the smaller path
+       -- by far: revert_events is built from reverting edits parsed out of edit
+       -- summaries, while most outcomes arrive as mw-reverted tags that land in
+       -- outcome.labels and never produce a revert_events row at all. The guard
+       -- was blind to the majority of the outcomes it exists to catch.
+       (EXISTS (SELECT 1 FROM outcome.revert_events r
+                 WHERE r.reverted_revid = e.revid AND r.revert_ts <= now())
+        OR EXISTS (SELECT 1 FROM outcome.labels l
+                    WHERE l.revid = e.revid AND l.first_observed_at_utc <= now()))
            AS outcome_already_observable
   FROM landing.rc_events e
  WHERE NOT EXISTS (

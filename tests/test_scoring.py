@@ -254,6 +254,75 @@ def test_a_score_written_after_the_outcome_was_visible_is_flagged(
 
 
 @pytest.mark.db
+def test_an_edit_whose_label_we_already_held_is_flagged(
+    fresh_db: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M3-FR-10, the limb the guard was missing.
+
+    revert_events is built from reverting edits parsed out of edit summaries.
+    Most outcomes never take that path — they arrive as mw-reverted tags, land
+    in outcome.labels, and produce no revert_events row at all. An edit whose
+    answer was already sitting in the database was therefore scored, and
+    recorded, as though it had been predicted.
+    """
+    from bellwether import score
+
+    monkeypatch.setattr(registry, "MODELS_DIR", tmp_path)
+    path = tmp_path / "champion-known.pkl"
+    path.write_bytes(pickle.dumps(ConstantModel(0.5), protocol=5))
+    digest = registry.artifact_sha256(path)
+
+    with connect() as conn:
+        _event(conn, 1, minutes_ago=240)
+        conn.execute(
+            """
+            INSERT INTO outcome.labels
+                (revid, label, label_source, first_observed_at_utc,
+                 detection_latency_seconds)
+            VALUES (1, true, 'mw_reverted', now() - make_interval(mins => 90), 900)
+            """
+        )
+        _register(conn, "champion-known", digest)
+
+    assert score.run(limit=100)["late"] == 1
+
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT outcome_observable_at_scoring FROM register.predictions WHERE revid = 1"
+        ).fetchone()
+    assert row is not None and row["outcome_observable_at_scoring"] is True
+
+
+@pytest.mark.db
+def test_a_label_observed_after_scoring_is_a_real_prediction(
+    fresh_db: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other direction, which matters just as much: the guard must not
+    condemn an honest prediction simply because the outcome exists by the time
+    anyone reads the register."""
+    from bellwether import score
+
+    monkeypatch.setattr(registry, "MODELS_DIR", tmp_path)
+    path = tmp_path / "champion-honest.pkl"
+    path.write_bytes(pickle.dumps(ConstantModel(0.5), protocol=5))
+    digest = registry.artifact_sha256(path)
+
+    with connect() as conn:
+        _event(conn, 1, minutes_ago=10)
+        conn.execute(
+            """
+            INSERT INTO outcome.labels
+                (revid, label, label_source, first_observed_at_utc,
+                 detection_latency_seconds)
+            VALUES (1, true, 'mw_reverted', now() + make_interval(mins => 30), 900)
+            """
+        )
+        _register(conn, "champion-honest", digest)
+
+    assert score.run(limit=100)["late"] == 0
+
+
+@pytest.mark.db
 def test_the_scorer_refuses_without_a_registered_model(fresh_db: None) -> None:
     from bellwether import score
 

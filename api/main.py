@@ -537,6 +537,27 @@ SELECT count(*)                                                      AS predicti
   FROM register.predictions
 """
 
+# The same question the scorer asked itself, asked again now.
+#
+# The stored flag is what the scorer KNEW at write time, and it can only ever
+# understate: labels keep arriving after a score is written, and until this
+# commit the scorer consulted only revert_events, so every prediction taken
+# before it is flagged too low. register.predictions has no UPDATE grant — that
+# is the point of it — so the row cannot be corrected in place. It is recomputed
+# on read instead, against everything known now.
+#
+# This compares against p.scored_at rather than now(), which is the comparison
+# that was actually wanted all along and is only available in hindsight: did we
+# hold this answer at the moment we claimed to be predicting it?
+REGISTER_RECHECK_SQL = """
+SELECT count(*) AS known_before_scoring
+  FROM register.predictions p
+ WHERE EXISTS (SELECT 1 FROM outcome.revert_events r
+                WHERE r.reverted_revid = p.revid AND r.revert_ts <= p.scored_at)
+    OR EXISTS (SELECT 1 FROM outcome.labels l
+                WHERE l.revid = p.revid AND l.first_observed_at_utc <= p.scored_at)
+"""
+
 CHAMPION_SQL = """
 SELECT model_version, trained_at, training_start, training_end, n_train_events,
        n_train_positives, artifact_path, artifact_sha256, offline_metrics,
@@ -563,10 +584,12 @@ def register_view() -> dict[str, Any]:
     """
     with _connect() as conn:
         totals = conn.execute(REGISTER_SQL).fetchone() or {}
+        recheck = conn.execute(REGISTER_RECHECK_SQL).fetchone() or {}
         champion = conn.execute(CHAMPION_SQL).fetchone()
 
     scored = int(totals.get("predictions") or 0)
     late = int(totals.get("scored_late") or 0)
+    known = int(recheck.get("known_before_scoring") or 0)
 
     def number(value: Any) -> float | None:
         """Postgres numeric arrives as Decimal, which serialises to a JSON
@@ -586,9 +609,17 @@ def register_view() -> dict[str, Any]:
             "max": number(totals.get("lag_max_minutes")),
         },
         "scored_after_outcome_was_observable": {
-            "count": late,
-            "share": round(late / scored, 5) if scored else None,
-            "note": "excluded from every accuracy claim; see M3-FR-10",
+            "count": known,
+            "share": round(known / scored, 5) if scored else None,
+            "flagged_by_the_scorer_at_write_time": late,
+            "note": (
+                "Excluded from every accuracy claim; see M3-FR-10. The headline "
+                "count is recomputed on read against everything known now, and "
+                "is the figure to use. The scorer's own flag is published beside "
+                "it and can only understate: outcomes keep arriving after a "
+                "score is written, and register.predictions cannot be updated by "
+                "grant, so the row is never corrected in place."
+            ),
         },
         "champion": (
             None
