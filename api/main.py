@@ -171,6 +171,11 @@ SCHEMA_EXPECTATIONS = {
     "004_m1_gaps": ("SELECT to_regclass('landing.gap_attempts') IS NOT NULL AS present"),
     "006_m1_revert_events": ("SELECT to_regclass('outcome.revert_events') IS NOT NULL AS present"),
     "008_m2_evaluations": ("SELECT to_regclass('outcome.evaluations') IS NOT NULL AS present"),
+    "009_m2_null_check": (
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
+        "                WHERE table_schema = 'outcome' AND table_name = 'evaluations'"
+        "                  AND column_name = 'null_pr_auc') AS present"
+    ),
     "007_m2_state": (
         "SELECT to_regclass('landing.editor_state') IS NOT NULL"
         "   AND to_regclass('landing.page_state') IS NOT NULL"
@@ -485,6 +490,10 @@ def kc2() -> dict[str, Any]:
         "n_events": row["n_events"],
         "n_positives": row["n_positives"],
         "n_features": row["n_features"],
+        # A model fitted to shuffled labels should score at the base rate.
+        # Published beside the verdict so it can be judged against it.
+        "null_pr_auc": row["null_pr_auc"],
+        "base_rate": row["base_rate"],
         "code_commit": row["code_commit"],
         "note": (
             "PROVISIONAL while maturity is fixed at 48h. The real window needs "

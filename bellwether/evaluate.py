@@ -57,11 +57,11 @@ INSERT_EVALUATION_SQL = """
 INSERT INTO outcome.evaluations
     (window_start, window_end, maturity_hours, provisional, n_events, n_positives,
      n_features, pr_auc, margin, ci_low, ci_high, margin_required, clears_kc2,
-     feature_names, code_commit, run_id)
+     feature_names, code_commit, run_id, null_pr_auc, base_rate)
 VALUES (%(window_start)s, %(window_end)s, %(maturity_hours)s, %(provisional)s,
         %(n_events)s, %(n_positives)s, %(n_features)s, %(pr_auc)s::jsonb, %(margin)s,
         %(ci_low)s, %(ci_high)s, %(margin_required)s, %(clears)s,
-        %(features)s, %(commit)s, %(run_id)s)
+        %(features)s, %(commit)s, %(run_id)s, %(null_pr_auc)s, %(base_rate)s)
 """
 
 DATASET_SQL = """
@@ -181,6 +181,56 @@ def rolling_origin_scores(
     return scores[scored], scored
 
 
+def null_check(matrix: np.ndarray, labels: np.ndarray, *, folds: int = 4) -> float:
+    """Retrain on SHUFFLED labels and score the same way.
+
+    The one check that catches leakage the knowability guard structurally
+    cannot. The guard proves no feature depends on the future of the event it
+    describes; it cannot prove the evaluation harness is sound. If row order,
+    the fold split, or anything else carries information about the outcome,
+    a model fitted to randomised labels will still beat the base rate.
+
+    Expected result: PR-AUC at roughly the positive rate. Anything materially
+    above it means the number this module reports is not measuring the
+    features.
+    """
+    rng = np.random.default_rng(SEED + 1)
+    shuffled = labels.copy()
+    rng.shuffle(shuffled)
+    scores, scored = rolling_origin_scores(matrix, shuffled, folds=folds)
+    return float(average_precision_score(shuffled[scored], scores))
+
+
+def top_features(
+    matrix: np.ndarray, labels: np.ndarray, names: list[str], *, top: int = 8
+) -> list[tuple[str, float]]:
+    """Permutation importance on a held-out tail.
+
+    Published because "the model works" is not a finding — what it leaned on
+    is. A feature dominating for reasons nobody can explain is how a leak
+    survives a green evaluation.
+    """
+    split = int(len(labels) * 0.8)
+    if len(set(labels[:split].tolist())) < 2:
+        return []
+    model = HistGradientBoostingClassifier(max_iter=200, learning_rate=0.1, random_state=SEED)
+    model.fit(matrix[:split], labels[:split])
+
+    x_test, y_test = matrix[split:], labels[split:]
+    if y_test.sum() == 0:
+        return []
+    base = average_precision_score(y_test, model.predict_proba(x_test)[:, 1])
+
+    rng = np.random.default_rng(SEED + 2)
+    drops = []
+    for j, name in enumerate(names):
+        shuffled = x_test.copy()
+        rng.shuffle(shuffled[:, j])
+        score = average_precision_score(y_test, model.predict_proba(shuffled)[:, 1])
+        drops.append((name, base - score))
+    return sorted(drops, key=lambda kv: -kv[1])[:top]
+
+
 def paired_bootstrap(
     y: np.ndarray, a: np.ndarray, b: np.ndarray, *, resamples: int = BOOTSTRAP_RESAMPLES
 ) -> tuple[float, float, float]:
@@ -248,6 +298,21 @@ def run(*, window_start: str, window_end: str, folds: int = 4) -> dict[str, Any]
     for name, value in sorted(results.items(), key=lambda kv: -kv[1]):
         print(f"{name:<20}{value:>10.4f}")
 
+    null = null_check(matrix, labels, folds=folds)
+    base_rate = float(labels.mean())
+    print()
+    print(f"null check (labels shuffled): PR-AUC {null:.4f} against a base rate of {base_rate:.4f}")
+    if null > base_rate * 1.5:
+        print(
+            "WARNING: a model fitted to random labels beats the base rate. "
+            "The harness is leaking, and the result below is not about the features."
+        )
+
+    print()
+    print("top features by permutation importance (PR-AUC lost when shuffled)")
+    for name, drop in top_features(matrix, labels, names):
+        print(f"  {name:<28}{drop:+.4f}")
+
     observed, lo, hi = paired_bootstrap(y, model_scores, base["logged_out"])
     print(f"\nmodel minus logged-out heuristic: {observed:+.4f}  95% CI [{lo:+.4f}, {hi:+.4f}]")
     print(f"KC-2 margin required:             {KC2_MARGIN:+.4f}")
@@ -272,6 +337,8 @@ def run(*, window_start: str, window_end: str, folds: int = 4) -> dict[str, Any]
         "margin_required": KC2_MARGIN,
         "clears": clears,
         "features": names,
+        "null_pr_auc": null,
+        "base_rate": base_rate,
         "commit": get_settings().build_id,
         "run_id": run_id,
     }
