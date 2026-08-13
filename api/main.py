@@ -171,6 +171,11 @@ SCHEMA_EXPECTATIONS = {
     "004_m1_gaps": ("SELECT to_regclass('landing.gap_attempts') IS NOT NULL AS present"),
     "006_m1_revert_events": ("SELECT to_regclass('outcome.revert_events') IS NOT NULL AS present"),
     "008_m2_evaluations": ("SELECT to_regclass('outcome.evaluations') IS NOT NULL AS present"),
+    "010_m2_importance": (
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
+        "                WHERE table_schema = 'outcome' AND table_name = 'evaluations'"
+        "                  AND column_name = 'feature_importance') AS present"
+    ),
     "009_m2_null_check": (
         "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
         "                WHERE table_schema = 'outcome' AND table_name = 'evaluations'"
@@ -494,6 +499,10 @@ def kc2() -> dict[str, Any]:
         # Published beside the verdict so it can be judged against it.
         "null_pr_auc": row["null_pr_auc"],
         "base_rate": row["base_rate"],
+        "feature_importance": row["feature_importance"],
+        # Whether the verdict survives without its most important feature.
+        "ablated_feature": row["ablated_feature"],
+        "ablated_margin": row["ablated_margin"],
         "code_commit": row["code_commit"],
         "note": (
             "PROVISIONAL while maturity is fixed at 48h. The real window needs "

@@ -57,11 +57,13 @@ INSERT_EVALUATION_SQL = """
 INSERT INTO outcome.evaluations
     (window_start, window_end, maturity_hours, provisional, n_events, n_positives,
      n_features, pr_auc, margin, ci_low, ci_high, margin_required, clears_kc2,
-     feature_names, code_commit, run_id, null_pr_auc, base_rate)
+     feature_names, code_commit, run_id, null_pr_auc, base_rate,
+     feature_importance, ablated_feature, ablated_margin)
 VALUES (%(window_start)s, %(window_end)s, %(maturity_hours)s, %(provisional)s,
         %(n_events)s, %(n_positives)s, %(n_features)s, %(pr_auc)s::jsonb, %(margin)s,
         %(ci_low)s, %(ci_high)s, %(margin_required)s, %(clears)s,
-        %(features)s, %(commit)s, %(run_id)s, %(null_pr_auc)s, %(base_rate)s)
+        %(features)s, %(commit)s, %(run_id)s, %(null_pr_auc)s, %(base_rate)s,
+        %(importance)s::jsonb, %(ablated_feature)s, %(ablated_margin)s)
 """
 
 DATASET_SQL = """
@@ -310,8 +312,38 @@ def run(*, window_start: str, window_end: str, folds: int = 4) -> dict[str, Any]
 
     print()
     print("top features by permutation importance (PR-AUC lost when shuffled)")
-    for name, drop in top_features(matrix, labels, names):
+    importance = top_features(matrix, labels, names, top=len(names))
+    for name, drop in importance[:8]:
         print(f"  {name:<28}{drop:+.4f}")
+
+    # Does the result survive without its most important feature?
+    #
+    # Not tuning — the spec forbids that, and this makes the model worse on
+    # purpose. It answers whether KC-2 rests on one input. log_user_id
+    # dominated the first run, and account ids rise monotonically by
+    # construction, so a model leaning on their absolute magnitude will see
+    # different values every month. A margin that survives its removal is a
+    # claim about the feature set; one that does not is a claim about one
+    # column with a known drift problem.
+    ablated_feature = importance[0][0] if importance else None
+    ablated_margin = float("nan")
+    if ablated_feature:
+        keep = [i for i, n in enumerate(names) if n != ablated_feature]
+        ab_scores, ab_scored = rolling_origin_scores(matrix[:, keep], labels, folds=folds)
+        ablated_margin = float(
+            average_precision_score(labels[ab_scored], ab_scores)
+            - average_precision_score(
+                labels[ab_scored], baseline_scores(rows)["logged_out"][ab_scored]
+            )
+        )
+        print()
+        print(
+            f"without {ablated_feature}: margin {ablated_margin:+.4f} (required {KC2_MARGIN:+.4f})"
+        )
+        if ablated_margin < KC2_MARGIN:
+            print("  KC-2 would NOT clear without it. The result rests on one feature.")
+        else:
+            print("  KC-2 still clears. The result does not rest on one feature.")
 
     observed, lo, hi = paired_bootstrap(y, model_scores, base["logged_out"])
     print(f"\nmodel minus logged-out heuristic: {observed:+.4f}  95% CI [{lo:+.4f}, {hi:+.4f}]")
@@ -339,6 +371,9 @@ def run(*, window_start: str, window_end: str, folds: int = 4) -> dict[str, Any]
         "features": names,
         "null_pr_auc": null,
         "base_rate": base_rate,
+        "importance": json.dumps({n: round(v, 6) for n, v in importance}),
+        "ablated_feature": ablated_feature,
+        "ablated_margin": None if ablated_margin != ablated_margin else ablated_margin,
         "commit": get_settings().build_id,
         "run_id": run_id,
     }

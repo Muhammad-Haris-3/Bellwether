@@ -242,3 +242,52 @@ that a genuinely useful model clears it.
 
 The guard comes first on purpose. Everything after it is only trustworthy
 because it exists.
+
+
+---
+
+## 13. What the model leaned on (provisional, 2026-08-14)
+
+Permutation importance, PR-AUC lost when each feature is shuffled on a
+held-out tail:
+
+| Feature | Importance |
+|---|---|
+| `log_user_id` | **+0.2076** |
+| `editor_edits_seen` | +0.0989 |
+| `editor_days_known` | +0.0484 |
+| `byte_delta` | +0.0306 |
+| `tag_count` | +0.0238 |
+| `comment_length` | +0.0177 |
+| `abs_byte_delta` | +0.0145 |
+| `page_edits_seen` | +0.0087 |
+
+Three things follow, and the third is a problem.
+
+**`is_logged_out` is absent.** The KC-2 opponent does not appear at all, because
+`log_user_id` subsumes it: temporary accounts are freshly minted and so carry
+the highest ids, while registered accounts span the full range and newer ones
+are riskier than veterans. One continuous feature encodes both the boolean and
+a finer signal.
+
+**§3.3 was wrong twice over.** It predicted history features would be useless
+under a 3% frame. They are the second and third most important things in the
+model.
+
+**The top feature drifts by construction.** Account ids only increase, so a
+model leaning on their absolute magnitude sees systematically different values
+every month. That is covariate drift built into the single most important
+input — the exact condition M5's drift detection exists to catch, discovered
+before a model was ever deployed.
+
+M2 does not fix it. Re-engineering the feature would be the model tuning §6
+forbids, and KC-2 asks whether signal exists rather than how much can be
+extracted. What M2 does instead is **measure whether the verdict depends on
+it**: the margin is now computed a second time with that feature removed, and
+both are recorded. A result that survives the ablation is a claim about the
+feature set; one that does not is a claim about one column with a known drift
+problem.
+
+Carried to M3 as a named risk: replace raw `log_user_id` with a drift-stable
+form — account age, or a percentile against the maximum id seen so far, which
+is point-in-time computable from ingested data.
