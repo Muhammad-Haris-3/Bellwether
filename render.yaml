@@ -1,0 +1,20 @@
+# Render blueprint for the read-only API.
+#
+# BELLWETHER_READONLY_DATABASE_URL is deliberately NOT set here. It is entered
+# by hand in the Render dashboard, using the POOLED Neon endpoint, and it holds
+# the read-only role. The writer credential never comes near this container —
+# if it did, the append-only guarantee would rest on this service choosing not
+# to use it.
+services:
+  - type: web
+    name: bellwether-api
+    runtime: docker
+    plan: free
+    region: ohio
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: BELLWETHER_ENV
+        value: production
+      - key: BELLWETHER_READONLY_DATABASE_URL
+        sync: false

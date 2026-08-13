@@ -1,0 +1,11 @@
+# Serving container only.
+#
+# Deliberately excludes httpx and everything the pipeline uses to WRITE. The
+# API holds a read-only database role, and it should not also be carrying the
+# code that talks to MediaWiki — a test asserts this file stays clean, because
+# "the API doesn't write" is a stronger claim when the API cannot.
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+psycopg[binary]==3.2.9
+pydantic==2.11.7
+pydantic-settings==2.10.1
