@@ -180,6 +180,32 @@ def test_cannot_claim_to_have_observed_an_edit_before_it_happened(fresh_db: None
         )
 
 
+def test_grants_are_verifiable_without_knowing_the_role_passwords(fresh_db: None) -> None:
+    """The bootstrap script's re-run path.
+
+    A re-run deliberately leaves existing passwords alone so a deployed secret
+    keeps working. The first version then tried to verify using freshly
+    generated passwords it had never applied, so every probe failed
+    authentication and the script announced that the append-only guarantee did
+    not hold — on a database where it held perfectly well.
+
+    A false alarm on this particular check is expensive: it is the one claim
+    the whole project rests on, so it has to be verifiable on every run,
+    without credentials.
+    """
+    import importlib.util
+    import os
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / "scripts" / "bootstrap_database.py"
+    spec = importlib.util.spec_from_file_location("bootstrap_database", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.verify_grants(os.environ["BELLWETHER_DATABASE_URL"]) is True
+
+
 def test_run_log_records_a_failed_run(fresh_db: None) -> None:
     """A log of successes only is silent exactly when it is needed."""
     from bellwether.runlog import RunContext

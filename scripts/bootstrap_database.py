@@ -81,15 +81,43 @@ def ensure_login(conn: psycopg.Connection, role: str, password: str) -> None:
     )
 
 
-def verify_guarantees(url: str, writer_url: str, reader_url: str) -> bool:
-    """Try the forbidden operations. Every one must be refused.
+MOVE_CURSOR = (
+    "INSERT INTO landing.cursors (job, position_utc) VALUES ('probe', now()) "
+    "ON CONFLICT (job) DO UPDATE SET position_utc = EXCLUDED.position_utc"
+)
 
-    Uses the real login roles rather than SET ROLE: SET ROLE proves the grant
-    exists, but only a genuine connection proves the credential that will
-    actually be deployed is the one carrying it.
+FORBIDDEN: list[tuple[str, str]] = [
+    (WRITER, "UPDATE outcome.labels SET label = false WHERE revid = -1"),
+    (WRITER, "DELETE FROM outcome.labels WHERE revid = -1"),
+    (WRITER, "DELETE FROM landing.rc_events WHERE revid = -1"),
+    (WRITER, "DELETE FROM outcome.label_checks WHERE revid = -1"),
+    (READER, "DELETE FROM landing.rc_events WHERE revid = -1"),
+    (READER, "INSERT INTO landing.cursors (job, position_utc) VALUES ('probe', now())"),
+]
+
+
+def _attempt(dsn: str, statement: str, *, as_role: str | None = None) -> str:
+    """Run one statement and report how the server answered.
+
+    A fresh connection per statement: a refusal aborts the transaction, and
+    reusing the connection would make every subsequent statement fail for the
+    wrong reason — which is exactly how a broken grant hides behind a cascade
+    of unrelated errors.
     """
-    all_good = True
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            if as_role:
+                conn.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(as_role)))
+            conn.execute(statement.encode())
+    except psycopg.errors.InsufficientPrivilege:
+        return "refused"
+    except Exception as exc:  # noqa: BLE001
+        first_line = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        return f"error|{type(exc).__name__}: {first_line[:110]}"
+    return "allowed"
 
+
+def seed_probe(url: str) -> None:
     with psycopg.connect(url, autocommit=True) as conn:
         conn.execute(
             """
@@ -110,49 +138,78 @@ def verify_guarantees(url: str, writer_url: str, reader_url: str) -> bool:
             """
         )
 
-    forbidden = [
-        (writer_url, WRITER, "UPDATE outcome.labels SET label = false WHERE revid = -1"),
-        (writer_url, WRITER, "DELETE FROM outcome.labels WHERE revid = -1"),
-        (writer_url, WRITER, "DELETE FROM landing.rc_events WHERE revid = -1"),
-        (writer_url, WRITER, "DELETE FROM outcome.label_checks WHERE revid = -1"),
-        (reader_url, READER, "DELETE FROM landing.rc_events WHERE revid = -1"),
-        (
-            reader_url,
-            READER,
-            "INSERT INTO landing.cursors (job, position_utc) VALUES ('probe', now())",
-        ),
-    ]
 
-    for dsn, role, statement in forbidden:
-        try:
-            with psycopg.connect(dsn, autocommit=True) as conn:
-                conn.execute(statement)  # type: ignore[arg-type]
-        except psycopg.errors.InsufficientPrivilege:
-            ok(f"{role} refused: {statement[:58]}")
-        except Exception as exc:  # noqa: BLE001
-            warn(f"{role}: unexpected {type(exc).__name__} on {statement[:40]} - {exc}")
-            all_good = False
-        else:
-            fail(f"{role} was ALLOWED to run: {statement}")
-            all_good = False
-
-    # The writer must still be able to do its job.
-    try:
-        with psycopg.connect(writer_url, autocommit=True) as conn:
-            conn.execute(
-                "INSERT INTO landing.cursors (job, position_utc) VALUES ('probe', now()) "
-                "ON CONFLICT (job) DO UPDATE SET position_utc = EXCLUDED.position_utc"
-            )
-        ok(f"{WRITER} can still move the cursor")
-    except Exception as exc:  # noqa: BLE001
-        fail(f"{WRITER} cannot move the cursor: {exc}")
-        all_good = False
-
+def clear_probe(url: str) -> None:
     with psycopg.connect(url, autocommit=True) as conn:
         conn.execute("DELETE FROM outcome.labels WHERE revid = -1")
         conn.execute("DELETE FROM landing.rc_events WHERE revid = -1")
         conn.execute("DELETE FROM landing.cursors WHERE job = 'probe'")
 
+
+def verify_grants(url: str) -> bool:
+    """Check the grants themselves, using SET ROLE from the owner.
+
+    Needs no role passwords, so it works on every run — including a re-run that
+    deliberately left existing passwords alone. This is the check that must
+    never be skipped: it is the one that proves the append-only property.
+    """
+    all_good = True
+    seed_probe(url)
+
+    for role, statement in FORBIDDEN:
+        outcome = _attempt(url, statement, as_role=role)
+        if outcome == "refused":
+            ok(f"{role} refused: {statement[:56]}")
+        elif outcome == "allowed":
+            fail(f"{role} was ALLOWED to run: {statement}")
+            all_good = False
+        else:
+            fail(f"{role}: could not test - {outcome.split('|', 1)[1]}")
+            all_good = False
+
+    outcome = _attempt(url, MOVE_CURSOR, as_role=WRITER)
+    if outcome == "allowed":
+        ok(f"{WRITER} can still move the cursor")
+    else:
+        fail(f"{WRITER} cannot move the cursor: {outcome}")
+        all_good = False
+
+    clear_probe(url)
+    return all_good
+
+
+def verify_logins(url: str, writer_url: str, reader_url: str) -> bool:
+    """Check that the credentials being handed out actually carry those grants.
+
+    SET ROLE proves the grant exists on the role. Only a real connection proves
+    the string about to be pasted into GitHub authenticates as that role and
+    inherits it. Runs only when this invocation set the passwords — otherwise
+    it has no password to connect with, and attempting anyway produces an
+    authentication failure dressed up as a broken guarantee.
+    """
+    all_good = True
+    seed_probe(url)
+    dsn_for = {WRITER: writer_url, READER: reader_url}
+
+    for role, statement in FORBIDDEN:
+        outcome = _attempt(dsn_for[role], statement)
+        if outcome == "refused":
+            ok(f"{role} (real login) refused: {statement[:42]}")
+        elif outcome == "allowed":
+            fail(f"{role} (real login) was ALLOWED: {statement}")
+            all_good = False
+        else:
+            fail(f"{role} (real login): {outcome.split('|', 1)[1]}")
+            all_good = False
+
+    outcome = _attempt(dsn_for[WRITER], MOVE_CURSOR)
+    if outcome == "allowed":
+        ok(f"{WRITER} (real login) can move the cursor")
+    else:
+        fail(f"{WRITER} (real login) cannot move the cursor: {outcome}")
+        all_good = False
+
+    clear_probe(url)
     return all_good
 
 
@@ -184,31 +241,52 @@ def main() -> int:
             ok(f"applied {path.name}")
 
     step(3, "Role logins")
-    writer_pw = secrets.token_urlsafe(24)
-    reader_pw = secrets.token_urlsafe(24)
+    passwords: dict[str, str] = {}
     with psycopg.connect(url, autocommit=True) as conn:
-        for role, pw in ((WRITER, writer_pw), (READER, reader_pw)):
+        for role in (WRITER, READER):
             if role_has_login(conn, role) and not args.rotate_passwords:
                 warn(f"{role} already has a login; password left alone")
                 warn("  re-run with --rotate-passwords to change it")
             else:
+                pw = secrets.token_urlsafe(24)
                 ensure_login(conn, role, pw)
+                passwords[role] = pw
                 ok(f"{role} login set")
 
-    writer_url = swap_credentials(url, WRITER, writer_pw)
-    reader_url = swap_credentials(url, READER, reader_pw)
-
     step(4, "Verify the append-only guarantee ON THIS SERVER")
-    if not verify_guarantees(url, writer_url, reader_url):
+    if not verify_grants(url):
         print(f"\n{RED}The guarantee does not hold. Do not deploy this database.{RESET}")
         return 1
     ok("every forbidden operation was refused")
 
+    # Only possible when this run set the passwords. Skipping it is a real
+    # reduction in coverage, so it is announced rather than passed over
+    # quietly — the grants are proven either way, the credential is not.
+    if len(passwords) == 2:
+        print()
+        if not verify_logins(
+            url, *(swap_credentials(url, r, passwords[r]) for r in (WRITER, READER))
+        ):
+            print(f"\n{RED}The deployed credentials do not carry the grants.{RESET}")
+            return 1
+    else:
+        print()
+        warn("skipped the real-login check: passwords were not set this run")
+        warn("  the grants above are proven; the credentials are unchanged and")
+        warn("  were verified when they were issued")
+
     step(5, "Connection strings")
-    print(f"\n  {DIM}GitHub Actions secret BELLWETHER_DATABASE_URL:{RESET}")
-    print(f"  {writer_url}")
-    print(f"\n  {DIM}Render environment BELLWETHER_READONLY_DATABASE_URL:{RESET}")
-    print(f"  {reader_url}")
+    if not passwords:
+        print(f"\n  {DIM}Passwords unchanged. Keep using the strings you already have.{RESET}")
+        print(f"  {DIM}Lost them? Re-run with --rotate-passwords.{RESET}\n")
+        return 0
+
+    if WRITER in passwords:
+        print(f"\n  {DIM}GitHub Actions secret BELLWETHER_DATABASE_URL:{RESET}")
+        print(f"  {swap_credentials(url, WRITER, passwords[WRITER])}")
+    if READER in passwords:
+        print(f"\n  {DIM}Render environment BELLWETHER_READONLY_DATABASE_URL:{RESET}")
+        print(f"  {swap_credentials(url, READER, passwords[READER])}")
     print(
         f"\n  {YELLOW}The writer string never goes near the serving container.{RESET}\n"
         f"  {DIM}If the API held write credentials, the append-only guarantee "
