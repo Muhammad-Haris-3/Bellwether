@@ -282,6 +282,12 @@ def run(*, dry_run: bool = False) -> dict[str, Any]:
 
         with connect() as conn:
             require_current(conn)
+
+            frozen = conn.execute("SELECT app.is_automation_frozen() AS v").fetchone()
+            if frozen and frozen["v"]:
+                print("promote: automation is frozen — skipping")
+                return {"skipped": True, "reason": "frozen"}
+
             champion = registry.champion(conn)
             if not champion:
                 print("promote: no champion. Nothing to compare against.")

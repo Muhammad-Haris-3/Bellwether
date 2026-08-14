@@ -34,6 +34,7 @@ router = APIRouter()
 # item are different permissions and are declared as such here.
 ANY_SIGNED_IN = Depends(sessions.require_role("viewer", "reviewer", "admin"))
 CAN_JUDGE = Depends(sessions.require_role("reviewer", "admin"))
+ADMIN_ONLY = Depends(sessions.require_role("admin"))
 CSRF = Depends(sessions.check_csrf)
 
 # Ranked by the SERVING champion, which is what the decision log promoted —
@@ -288,3 +289,71 @@ def record_label(
         "score_shown": round(float(shown["score"]), 4),
         "was_matured": bool(shown["matured"]),
     }
+
+
+# --- Automation freeze (SRS FR-37, M6-FR-25) ---
+
+
+FREEZE_CURRENT_SQL = """
+SELECT frozen, set_at, reason, actor
+  FROM app.automation_freeze
+ ORDER BY freeze_id DESC
+ LIMIT 1
+"""
+
+
+class FreezeRequest(BaseModel):
+    frozen: bool
+    reason: str | None = None
+
+
+@router.get("/admin/freeze")
+def freeze_state(user: dict[str, Any] = ANY_SIGNED_IN) -> dict[str, Any]:
+    """Current automation freeze state (SRS FR-37).
+
+    Any authenticated user can see whether automation is paused — a frozen
+    system that looks live to its users is worse than a frozen one that says so.
+    The actor field is omitted: the fact that a freeze is set is the thing the
+    reviewer needs to see, and the identity of who set it is internal admin
+    state, not a public fact about a named person.
+    """
+    with sessions.acting_connection(user) as conn:
+        row = conn.execute(FREEZE_CURRENT_SQL).fetchone()
+    if not row:
+        return {"frozen": False, "set_at": None, "reason": None}
+    return {"frozen": bool(row["frozen"]), "set_at": row["set_at"], "reason": row["reason"]}
+
+
+@router.post("/admin/freeze")
+def set_freeze(
+    request: Request,
+    body: FreezeRequest,
+    user: dict[str, Any] = ADMIN_ONLY,
+    _csrf: None = CSRF,
+) -> dict[str, Any]:
+    """Pause or resume automation (SRS FR-37, M6-FR-25).
+
+    Inserts a row into `app.automation_freeze`, which is append-only. An admin
+    can set frozen=true (halt promotion) or frozen=false (resume), but cannot
+    alter or delete any past freeze row — the same guarantee that holds for
+    every other decision in this system.
+
+    The promotion job reads the current freeze state via `app.is_automation_frozen()`
+    and skips its work if the result is true.
+    """
+    with sessions.acting_connection(user) as conn:
+        conn.execute(
+            "INSERT INTO app.automation_freeze (frozen, actor, reason) VALUES (%s, %s, %s)",
+            (body.frozen, user["user_id"], body.reason),
+        )
+        sessions.audit(
+            conn,
+            actor=user["user_id"],
+            actor_role=user["role"],
+            action="set_freeze",
+            outcome="allowed",
+            target=None,
+            detail=f"frozen={body.frozen}" + (f" reason={body.reason!r}" if body.reason else ""),
+        )
+        conn.commit()
+    return {"frozen": body.frozen, "set": True}

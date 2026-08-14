@@ -252,6 +252,70 @@ def test_a_judgement_on_something_not_in_the_queue_is_refused(world: dict[str, A
     assert response.status_code == 404
 
 
+# --- Automation freeze (SRS FR-37, M6-FR-25) ---
+
+
+@pytest.mark.db
+def test_freeze_state_defaults_to_unfrozen(world: dict[str, Any]) -> None:
+    body = _signed_in("viewer").get("/admin/freeze").json()
+    assert body["frozen"] is False
+
+
+@pytest.mark.db
+def test_an_admin_can_freeze_automation(world: dict[str, Any]) -> None:
+    client = _signed_in("admin")
+    response = client.post("/admin/freeze", json={"frozen": True, "reason": "testing"})
+    assert response.status_code == 200
+    assert response.json()["frozen"] is True
+
+    state = client.get("/admin/freeze").json()
+    assert state["frozen"] is True
+    assert state["reason"] == "testing"
+
+
+@pytest.mark.db
+def test_an_admin_can_unfreeze_automation(world: dict[str, Any]) -> None:
+    client = _signed_in("admin")
+    client.post("/admin/freeze", json={"frozen": True})
+    client.post("/admin/freeze", json={"frozen": False, "reason": "all clear"})
+
+    state = client.get("/admin/freeze").json()
+    assert state["frozen"] is False
+
+
+@pytest.mark.db
+def test_freeze_is_audited(world: dict[str, Any]) -> None:
+    _signed_in("admin").post("/admin/freeze", json={"frozen": True, "reason": "drill"})
+
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT action, outcome, detail FROM app.audit_log ORDER BY audit_id DESC LIMIT 1"
+        ).fetchone()
+    assert row["action"] == "set_freeze"
+    assert row["outcome"] == "allowed"
+    assert "frozen=True" in (row["detail"] or "")
+
+
+@pytest.mark.db
+def test_a_non_admin_cannot_freeze(world: dict[str, Any]) -> None:
+    """The database enforces this too (FORCE RLS), but the API should refuse first."""
+    response = _signed_in("reviewer").post("/admin/freeze", json={"frozen": True})
+    assert response.status_code == 403
+
+
+@pytest.mark.db
+def test_freeze_requires_authentication(world: dict[str, Any]) -> None:
+    assert TestClient(app).get("/admin/freeze").status_code == 401
+
+
+@pytest.mark.db
+def test_freeze_post_requires_csrf(world: dict[str, Any]) -> None:
+    client = _signed_in("admin")
+    del client.headers[sessions.CSRF_HEADER]
+    response = client.post("/admin/freeze", json={"frozen": True})
+    assert response.status_code == 403
+
+
 @pytest.mark.db
 def test_the_queue_shows_a_reviewer_their_own_judgement_and_not_a_colleagues(
     world: dict[str, Any],

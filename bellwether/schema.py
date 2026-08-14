@@ -54,6 +54,21 @@ SCHEMA_EXPECTATIONS = {
     "015_m3_reproducibility": (
         "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
     ),
+    "026_m6_freeze_check": (
+        "SELECT EXISTS ("
+        "    SELECT 1 FROM pg_proc p"
+        "    JOIN pg_namespace n ON n.oid = p.pronamespace"
+        "    WHERE n.nspname = 'app' AND p.proname = 'is_automation_frozen'"
+        ") AS present"
+    ),
+    "025_m6_session_prune": (
+        "SELECT EXISTS ("
+        "    SELECT 1 FROM pg_proc p"
+        "    JOIN pg_namespace n ON n.oid = p.pronamespace"
+        "    WHERE n.nspname = 'landing' AND p.proname = 'prune_expired'"
+        "      AND p.prosrc LIKE '%app.sessions%'"
+        ") AS present"
+    ),
     "024_m6_schema_usage": (
         "SELECT has_schema_privilege('bellwether_readonly', 'app', 'USAGE')"
         "   AND has_table_privilege('bellwether_writer', 'app.sessions', 'DELETE') AS present"

@@ -7,13 +7,15 @@ what it refuses to delete.
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+import secrets
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import psycopg
 import pytest
+from psycopg.types.json import Json
 
-from bellwether import retention, seal
+from bellwether import auth, retention, seal
 from bellwether.db import connect
 
 pytestmark = pytest.mark.db
@@ -223,3 +225,109 @@ def test_storage_is_reported_against_the_budget(fresh_db: None) -> None:
     result = retention.run(dry_run=True)
     assert result["budget_bytes"] == 400_000_000
     assert result["budget_used_pct"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Session pruning (M6-FR-36)
+# ---------------------------------------------------------------------------
+
+
+def _user(conn: Any, n: int) -> Any:
+    digest, salt, params = auth.hash_password("pw")
+    row = conn.execute(
+        "INSERT INTO app.users (email, password_hash, password_salt, kdf_params, role) "
+        "VALUES (%s, %s, %s, %s, 'viewer') RETURNING user_id",
+        (f"prune-test-{n}@example.test", digest, salt, Json(params)),
+    ).fetchone()
+    return row["user_id"]
+
+
+def _session(conn: Any, user_id: Any, *, expires_at: datetime) -> None:
+    conn.execute(
+        "INSERT INTO app.sessions (user_id, token_hash, created_at, last_seen_at, expires_at) "
+        "VALUES (%s, %s, now(), now(), %s)",
+        (user_id, secrets.token_bytes(32), expires_at),
+    )
+
+
+def test_expired_sessions_are_deleted(fresh_db: None) -> None:
+    """M6-FR-36. Expired sessions must not accumulate."""
+    past = datetime.now(UTC) - timedelta(hours=1)
+    future = datetime.now(UTC) + timedelta(hours=12)
+
+    with connect() as conn:
+        uid = _user(conn, 1)
+        _session(conn, uid, expires_at=past)  # should be pruned
+        _session(conn, uid, expires_at=future)  # should survive
+
+    with connect() as conn:
+        counted = _prune(conn, dry_run=False)
+
+    assert counted["app.sessions"] == 1
+
+    with connect() as conn:
+        count = conn.execute("SELECT count(*) AS n FROM app.sessions").fetchone()["n"]
+    assert count == 1
+
+
+def test_session_dry_run_counts_without_deleting(fresh_db: None) -> None:
+    past = datetime.now(UTC) - timedelta(hours=1)
+
+    with connect() as conn:
+        uid = _user(conn, 1)
+        _session(conn, uid, expires_at=past)
+
+    with connect() as conn:
+        counted = _prune(conn, dry_run=True)
+
+    with connect() as conn:
+        still_there = conn.execute("SELECT count(*) AS n FROM app.sessions").fetchone()["n"]
+
+    assert counted["app.sessions"] == 1
+    assert still_there == 1
+
+
+def test_live_sessions_survive_pruning(fresh_db: None) -> None:
+    future = datetime.now(UTC) + timedelta(hours=12)
+
+    with connect() as conn:
+        uid = _user(conn, 1)
+        _session(conn, uid, expires_at=future)
+
+    with connect() as conn:
+        _prune(conn, dry_run=False)
+
+    with connect() as conn:
+        count = conn.execute("SELECT count(*) AS n FROM app.sessions").fetchone()["n"]
+    assert count == 1
+
+
+@pytest.mark.db
+def test_pruning_covers_every_table_it_is_supposed_to(fresh_db: None) -> None:
+    """The guard for a whole class of mistake, not just the one that happened.
+
+    landing.prune_expired has been defined three times: sql/005 created it,
+    sql/011 EXTENDED it to prune register.predictions under the seal guard, and
+    sql/025 replaced it again to add app.sessions. That last one was written
+    from 005's body, so CREATE OR REPLACE silently reverted 011's addition —
+    predictions would never have been pruned again and their seal guard would
+    have gone with them.
+
+    Nothing about that fails loudly. The function still ran, still reported
+    rows, and simply stopped mentioning one table. So this asserts the full set
+    of targets rather than any single one: a future replacement that forgets a
+    limb fails here instead of quietly shrinking what retention covers.
+    """
+    with connect() as conn:
+        targets = {
+            row["target"]
+            for row in conn.execute("SELECT * FROM landing.prune_expired(true)").fetchall()
+        }
+
+    assert targets == {
+        "landing.rc_events",
+        "outcome.label_checks",
+        "outcome.labels",
+        "register.predictions",
+        "app.sessions",
+    }
