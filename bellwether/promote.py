@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
@@ -393,6 +394,133 @@ def _report(
     print(f"  DECISION: {decision.upper()}")
 
 
+LAST_PROMOTION_SQL = """
+SELECT decision_id, decided_at, champion_version, challenger_version,
+       champion_pr_auc,
+       EXTRACT(epoch FROM now() - decided_at) / 86400.0 AS days_since
+  FROM decide.model_decisions
+ WHERE decision = 'promote'
+ ORDER BY decided_at DESC
+ LIMIT 1
+"""
+
+INSERT_ROLLBACK_SQL = """
+INSERT INTO decide.model_decisions
+    (decision, champion_version, challenger_version, trigger_reason,
+     champion_pr_auc, challenger_pr_auc, n_matured, prereg_commit, code_commit, run_id)
+VALUES ('rollback', %(restore)s, %(failing)s, %(reason)s,
+        %(previous_level)s, %(rolling)s, %(n)s, %(commit)s, %(commit)s, %(run_id)s)
+RETURNING decision_id
+"""
+
+
+def check_rollback(*, day: Any = None) -> dict[str, Any]:
+    """Restore the previous champion if the promoted one has fallen (M5-FR-25).
+
+    `PREREGISTRATION.md` §9: if a newly promoted champion's rolling 7-day PR-AUC
+    falls below the PREVIOUS champion's registered level by more than 0.02
+    within 14 days of promotion, the previous champion is automatically restored.
+
+    Automatic, and not an error state. A system that can promote but never
+    retreat has only half a mechanism, and a rollback hidden in a log nobody
+    publishes is a system quietly undoing its own decisions.
+
+    The 14 days run from the PROMOTION DECISION, not from the model's training
+    date (M5-FR-28). A model trained a fortnight before it was promoted would
+    otherwise be past its own rollback window on the day it started serving —
+    protected by nothing, at exactly the moment it is least proven.
+    """
+    run_id = new_run_id()
+    settings = get_settings()
+    day = day or datetime.now(UTC).date()
+
+    with connect() as lock_conn, advisory_lock(lock_conn, PROMOTE_LOCK_KEY) as acquired:
+        if not acquired:
+            print("rollback: another decision run holds the lock, exiting cleanly")
+            return {"skipped": True}
+
+        with connect() as conn:
+            require_current(conn)
+            with conn.cursor() as cur:
+                cur.execute(LAST_PROMOTION_SQL)
+                promotion = cur.fetchone()
+
+            if not promotion:
+                print("rollback: nothing has been promoted, so nothing can be rolled back")
+                return {"skipped": True, "reason": "no promotion"}
+
+            days_since = float(promotion["days_since"])
+            if days_since > pre.ROLLBACK_WINDOW_DAYS:
+                print(
+                    f"rollback: last promotion was {days_since:.1f}d ago, outside the "
+                    f"{pre.ROLLBACK_WINDOW_DAYS}d window"
+                )
+                return {"skipped": True, "reason": "outside window", "days_since": days_since}
+
+            promoted = promotion["challenger_version"]
+            previous = promotion["champion_version"]
+            previous_level = promotion["champion_pr_auc"]
+
+            from bellwether import triggers
+
+            rolling, matured = triggers.rolling_pr_auc(conn, version=promoted, day=day)
+
+        if rolling is None or previous_level is None:
+            print("rollback: not enough matured evidence to judge the promoted model yet")
+            return {"skipped": True, "reason": "undefined", "n_matured": len(matured)}
+
+        drop = float(previous_level) - rolling
+        fell = drop > pre.ROLLBACK_PR_AUC_DROP
+
+        print(f"rollback: {promoted} promoted {days_since:.1f}d ago, replacing {previous}")
+        print(f"  rolling PR-AUC {rolling} vs the previous champion's {previous_level}")
+        print(f"  drop {round(drop, 6)} > {pre.ROLLBACK_PR_AUC_DROP}? {fell}")
+
+        if not fell:
+            print("  holding")
+            return {"rolled_back": False, "drop": round(drop, 6), "n_matured": len(matured)}
+
+        reason = (
+            f"rolling PR-AUC {rolling} is {round(drop, 6)} below {previous}'s registered "
+            f"level {previous_level}, {days_since:.1f}d after promotion"
+        )
+        with RunContext(run_id, job=JOB) as ctx, connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    INSERT_ROLLBACK_SQL,
+                    {
+                        "restore": previous,
+                        "failing": promoted,
+                        "reason": reason,
+                        "previous_level": previous_level,
+                        "rolling": rolling,
+                        "n": len(matured),
+                        "commit": settings.build_id,
+                        "run_id": run_id,
+                    },
+                )
+                decision_id = cur.fetchone()["decision_id"]
+                cur.execute(
+                    INSERT_CHAMPION_SQL,
+                    {
+                        "version": previous,
+                        "decision_id": decision_id,
+                        "replaced": promoted,
+                    },
+                )
+            ctx.rows_read = len(matured)
+            ctx.rows_written = 1
+
+    print(f"  ROLLED BACK to {previous}")
+    return {
+        "rolled_back": True,
+        "restored": previous,
+        "withdrew": promoted,
+        "drop": round(drop, 6),
+        "n_matured": len(matured),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -400,8 +528,20 @@ def main() -> int:
         action="store_true",
         help="evaluate and print; write no decision. Never used in production.",
     )
+    parser.add_argument(
+        "--rollback-only",
+        action="store_true",
+        help="check the rollback condition and nothing else",
+    )
     args = parser.parse_args()
-    run(dry_run=args.dry_run)
+
+    # Rollback is checked FIRST, every run. Evaluating a challenger against a
+    # champion that should already have been withdrawn would compare against a
+    # model the rule has decided is failing.
+    if not args.dry_run:
+        check_rollback()
+    if not args.rollback_only:
+        run(dry_run=args.dry_run)
     return 0
 
 

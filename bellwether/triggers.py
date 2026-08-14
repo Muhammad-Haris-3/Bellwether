@@ -207,6 +207,51 @@ ON CONFLICT (evaluation_id, feature) DO NOTHING
 """
 
 
+def rolling_pr_auc(
+    conn: Any, *, version: str, day: date
+) -> tuple[float | None, list[dict[str, Any]]]:
+    """The champion's PR-AUC over the rolling window ending on `day`.
+
+    Shared with the rollback check, which asks the same question of a newly
+    promoted model. Two implementations of "how is it doing lately" would
+    eventually disagree, and the one that decides a rollback is not the one to
+    let drift.
+
+    Returns None when the window holds one class or nothing — undefined rather
+    than zero, because a window with no positives is not evidence of a model
+    performing badly.
+
+    **The window is over the last seven days of EVIDENCE, not of events.** A
+    window over recent events is empty by construction: maturity requires an
+    event to be seven days old, and the last seven days contains nothing that
+    old. The first version windowed on `event_ts` and every rolling figure it
+    produced was None, which would have disabled the decay trigger and the
+    rollback check together, silently, while both kept reporting that they had
+    run.
+    """
+    maturity = metrics.PROVISIONAL_MATURITY_SECONDS
+    matured_by = datetime.combine(day, datetime.min.time(), tzinfo=UTC) - timedelta(
+        seconds=maturity
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            ROLLING_SQL,
+            {
+                "version": version,
+                "window_start": matured_by - timedelta(days=pre.ROLLING_WINDOW_DAYS),
+                "window_end": matured_by,
+                "maturity": maturity,
+            },
+        )
+        matured = cur.fetchall()
+
+    labels = np.asarray([1 if r["label"] else 0 for r in matured], dtype=int)
+    if not len(matured) or labels.sum() in (0, len(labels)):
+        return None, matured
+    scores = np.asarray([float(r["score"]) for r in matured], dtype=float)
+    return round(float(average_precision_score(labels, scores)), 6), matured
+
+
 def psi(reference: np.ndarray, current: np.ndarray, *, bins: int = PSI_BINS) -> float | None:
     """Population stability index, with bin edges taken from the REFERENCE.
 
@@ -281,25 +326,9 @@ def run(*, window_day: date | None = None, retrain: bool = True) -> dict[str, An
                 return {"skipped": True, "reason": "no champion"}
             version = champion["model_version"]
 
-            window_end = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
-            window_start = window_end - timedelta(days=pre.ROLLING_WINDOW_DAYS)
-            # The same window M4 grades on, imported rather than restated. Two
-            # copies of a maturity rule is how the register and the metrics
-            # would end up disagreeing about which predictions count.
-            maturity = metrics.PROVISIONAL_MATURITY_SECONDS
+            rolling, matured = rolling_pr_auc(conn, version=version, day=day)
 
             with conn.cursor() as cur:
-                cur.execute(
-                    ROLLING_SQL,
-                    {
-                        "version": version,
-                        "window_start": window_start,
-                        "window_end": window_end,
-                        "maturity": maturity,
-                    },
-                )
-                matured = cur.fetchall()
-
                 cur.execute(BASELINE_SQL, {"version": version})
                 baseline = (cur.fetchone() or {}).get("baseline")
 
@@ -324,12 +353,6 @@ def run(*, window_day: date | None = None, retrain: bool = True) -> dict[str, An
                 )
 
         # --- decay ---------------------------------------------------------
-        labels = np.asarray([1 if r["label"] else 0 for r in matured], dtype=int)
-        rolling = None
-        if len(matured) and 0 < labels.sum() < len(labels):
-            scores = np.asarray([float(r["score"]) for r in matured], dtype=float)
-            rolling = round(float(average_precision_score(labels, scores)), 6)
-
         drop = None
         decay = False
         if rolling is not None and baseline is not None:

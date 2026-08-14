@@ -177,3 +177,55 @@ def test_psi_still_works_on_a_binary_feature() -> None:
     shifted = np.concatenate([np.zeros(500), np.ones(500)])
     value = triggers.psi(reference, shifted)
     assert value is not None and value > pre.DRIFT_PSI_THRESHOLD
+
+
+@pytest.mark.db
+def test_the_rolling_window_covers_evidence_not_recent_events(fresh_db: None) -> None:
+    """The bug that would have disabled decay and rollback together.
+
+    Maturity requires an event to be seven days old, so a window over the last
+    seven days of EVENTS contains nothing gradeable and the figure is always
+    None. Both the decay trigger and the rollback check consume it, so both
+    would have gone quiet while continuing to report that they had run.
+    """
+    day = date(2026, 8, 14)
+    with connect() as conn:
+        _champion(conn)
+        # Nine days old: matured, and inside the last seven days of evidence.
+        for revid in range(1, 41):
+            label = revid <= 10
+            conn.execute(
+                """
+                INSERT INTO landing.rc_events
+                    (revid, event_ts, ns, title, user_name, user_id, is_anon, is_temp,
+                     is_minor, is_bot, oldlen, newlen, tags, sampling_stratum,
+                     sampling_weight, ingested_at_utc)
+                VALUES (%s, %s::date - interval '9 days', 0, 'Page', 'Alice', 500,
+                        false, false, false, false, 100, 120, '{}', 'registered', 33.3, now())
+                """,
+                (revid, day),
+            )
+            conn.execute(
+                """
+                INSERT INTO outcome.label_checks
+                    (revid, checkpoint_seconds, checked_at_utc, age_seconds, had_reverted_tag)
+                VALUES (%s, %s, now(), %s, %s)
+                """,
+                (revid, 7 * 24 * 3600, 8 * 24 * 3600, label),
+            )
+            conn.execute(
+                """
+                INSERT INTO register.predictions
+                    (revid, event_ts, scored_at, model_version, role, score,
+                     feature_hash, outcome_observable_at_scoring)
+                SELECT revid, event_ts, event_ts + interval '5 minutes', 'champ',
+                       'champion', %s, 'h', false
+                  FROM landing.rc_events WHERE revid = %s
+                """,
+                (0.9 if label else 0.1, revid),
+            )
+
+        value, rows = triggers.rolling_pr_auc(conn, version="champ", day=day)
+
+    assert len(rows) == 40, "nine-day-old matured predictions belong in this window"
+    assert value is not None and value > 0.9
