@@ -59,12 +59,18 @@ SELECT
     -- the check that the frame has not silently blinded the secondary label
     -- path — the failure it was introduced to prevent.
     (SELECT count(*) FROM outcome.revert_events)                            AS revert_events,
-    -- The maturity cohort is a deterministic 10% bucket of the frame, and M4
+    -- The maturity cohort is a deterministic 10% bucket keyed on revid, and M4
     -- grades it on a 48h window because it is the only slice the labeller
-    -- checks that early. Published so the split is verifiable from outside:
-    -- if this is far from a tenth of events, the cohort figure is describing
-    -- something other than what it claims to.
+    -- checks that early.
+    --
+    -- This is FAR below a tenth of events and that is history rather than a
+    -- fault: the flag is written at insert time, most rows were inserted before
+    -- that code shipped, and ON CONFLICT DO NOTHING means re-ingesting them
+    -- never corrects it. Recent ingest runs flag 8.5-12.7 per cent as designed.
+    -- first_cohort_event is published beside it so the ratio can be read
+    -- against the events the cohort actually covers instead of all of them.
     (SELECT count(*) FROM landing.rc_events WHERE in_maturity_cohort)       AS cohort_events,
+    (SELECT min(event_ts) FROM landing.rc_events WHERE in_maturity_cohort)  AS first_cohort_event,
     (SELECT count(*) FROM register.predictions p
        JOIN landing.rc_events e ON e.revid = p.revid
       WHERE e.in_maturity_cohort AND p.role = 'champion')                   AS cohort_predictions,
@@ -332,6 +338,11 @@ def stats() -> dict[str, Any]:
             # from a tenth of events, the cohort figure describes something
             # other than what it claims to.
             "cohort_events": totals.get("cohort_events", 0),
+            # When the cohort starts. The flag is written at insert time and
+            # rows inserted before that code shipped can never be corrected, so
+            # the cohort covers events from here on rather than the whole
+            # table — which is why cohort_events is far below a tenth.
+            "first_cohort_event": totals.get("first_cohort_event"),
             "cohort_predictions": totals.get("cohort_predictions", 0),
             "newest_event": totals.get("newest_event"),
             "oldest_event": totals.get("oldest_event"),
@@ -760,8 +771,11 @@ def metrics_view() -> dict[str, Any]:
             "cohort the labeller checks exactly once and does so at the seven-day "
             "checkpoint; 'maturity_cohort' is the 10% receiving the full grid, matured "
             "at 48 hours, arriving five days sooner over a tenth as many events. The "
-            "cohort is a deterministic bucket of the sampling frame, so it is smaller "
-            "rather than skewed. Neither is a substitute for the other."
+            "cohort is a deterministic bucket keyed on revid, so within the events it "
+            "covers it is smaller rather than skewed — but it covers events from "
+            "first_cohort_event onward only, because the flag is written at insert time "
+            "and earlier rows cannot be corrected. Neither population substitutes for "
+            "the other."
         ),
     }
 

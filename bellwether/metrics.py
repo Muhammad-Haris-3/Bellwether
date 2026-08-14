@@ -64,11 +64,25 @@ PROVISIONAL_MATURITY_SECONDS = 7 * 24 * 3600
 # so a 48h check exists for every one of them and both arms of the inclusion
 # rule become available at 48 hours rather than seven days.
 #
-# It is a deterministic 10% bucket of the sampling frame, which makes it a
-# probability sample of the frame: smaller, not skewed. The figure arrives five
-# days sooner and describes a tenth as many events, and it is published under
-# its own population label rather than blended into the headline — a reader who
-# could not tell the two apart would take the early number for the real one.
+# It is a deterministic 10% bucket keyed on revid, so within the events it
+# covers it is a probability sample: smaller, not skewed.
+#
+# It does NOT cover the whole table, and the earlier claim that it did was
+# wrong. The flag is written at insert time and roughly 49,000 rows were
+# inserted before that code shipped; ON CONFLICT DO NOTHING means re-ingesting
+# them never corrects it, so the cohort is 0.93% of the table overall while
+# recent ingest runs flag 8.5-12.7% as designed. The cohort therefore begins
+# partway through and is a probability sample of events FROM THAT POINT ON.
+#
+# It is deliberately not backfilled even though the bucket is a pure function
+# of revid. The labeller used the STORED flag to decide which events received
+# the dense checkpoint grid, so a backfilled row would be marked as a cohort
+# member while holding none of the 48h checks the cohort exists to provide —
+# a sample that claims an observation nobody made.
+#
+# Published under its own population label rather than blended into the
+# headline: a reader who could not tell the two apart would take the early
+# number for the real one.
 COHORT_MATURITY_SECONDS = 48 * 3600
 
 POPULATIONS: dict[str, int] = {
