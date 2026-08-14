@@ -186,8 +186,7 @@ export default function TimelinePage() {
               thresholds live in code and are asserted against that document by
               the test suite, so the two cannot drift apart.
             </p>
-            <div className="scroller">
-<table>
+            <table>
               <tbody>
                 {RULE.map(([id, text]) => (
                   <tr key={id}>
@@ -199,7 +198,6 @@ export default function TimelinePage() {
                 ))}
               </tbody>
             </table>
-</div>
           </ScrollReveal>
 
           <ScrollReveal>
@@ -254,8 +252,7 @@ export default function TimelinePage() {
                   )}
                 </p>
                 {decision.reason && <p className="note">{decision.reason}</p>}
-                <div className="scroller">
-<table>
+                <table>
                   <thead>
                     <tr>
                       <th scope="col">Condition</th>
@@ -277,7 +274,6 @@ export default function TimelinePage() {
                     ))}
                   </tbody>
                 </table>
-</div>
               </ScrollReveal>
             ))
           )}
@@ -305,8 +301,7 @@ export default function TimelinePage() {
                 No evaluation recorded yet. The check runs daily.
               </p>
             ) : (
-              <div className="scroller">
-<table>
+              <table>
                 <caption className="sr-only">
                   Daily evaluations of the three pre-registered retrain triggers,
                   including the days on which none fired.
@@ -348,7 +343,6 @@ export default function TimelinePage() {
                   ))}
                 </tbody>
               </table>
-</div>
             )}
             <p className="note">
               A row of dashes is not a failed check. The rolling figure is computed
@@ -371,8 +365,7 @@ export default function TimelinePage() {
                 Nothing has been promoted, so there is no history to show.
               </p>
             ) : (
-              <div className="scroller">
-<table>
+              <table>
                 <thead>
                   <tr>
                     <th scope="col">Model</th>
@@ -392,7 +385,6 @@ export default function TimelinePage() {
                   ))}
                 </tbody>
               </table>
-</div>
             )}
           </ScrollReveal>
         </>

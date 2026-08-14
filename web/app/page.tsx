@@ -272,8 +272,7 @@ export default function Page() {
                 Nothing has matured yet. Rates appear once edits are 48 hours old.
               </p>
             ) : (
-              <div className="scroller">
-<table>
+              <table>
                 <thead>
                   <tr>
                     <th>Editor</th>
@@ -307,7 +306,6 @@ export default function Page() {
                   ))}
                 </tbody>
               </table>
-</div>
             )}
             <p className="note">
               Every rate carries its sample size and the maturity it was measured
@@ -329,8 +327,7 @@ export default function Page() {
           */}
           <ScrollReveal>
             <h2>How good is it?</h2>
-            <div className="scroller">
-<table>
+            <table>
               <thead>
                 <tr>
                   <th>Measurement</th>
@@ -394,7 +391,6 @@ export default function Page() {
                 })}
               </tbody>
             </table>
-</div>
             <p className="note">
               These are not the same measurement and the higher one is not the
               answer. The backtest scores a backfilled census whose labels were
@@ -460,8 +456,7 @@ export default function Page() {
 
           <ScrollReveal>
             <h2>Pipeline</h2>
-            <div className="scroller">
-<table>
+            <table>
               <thead>
                 <tr>
                   <th>Job</th>
@@ -490,7 +485,6 @@ export default function Page() {
                 })}
               </tbody>
             </table>
-</div>
             <p className="note">
               Staleness is stated rather than implied. Counts with no indication
               of when they last changed look identical to counts that stopped

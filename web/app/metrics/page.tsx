@@ -209,8 +209,7 @@ export default function MetricsPage() {
           */}
           <ScrollReveal>
             <h2>Live, and the backtest it is not</h2>
-            <div className="scroller">
-<table>
+            <table>
               <thead>
                 <tr>
                   <th scope="col">Measurement</th>
@@ -266,7 +265,6 @@ export default function MetricsPage() {
                 })}
               </tbody>
             </table>
-</div>
             <p className="note">
               These are not the same measurement and the higher one is not the
               answer. The backtest scores a backfilled census whose labels were
@@ -345,8 +343,7 @@ export default function MetricsPage() {
               </p>
             ) : (
               <>
-                <div className="scroller">
-<table>
+                <table>
                   <caption className="sr-only">
                     Reliability: predicted probability against observed frequency,
                     with the number of predictions in each band.
@@ -372,7 +369,6 @@ export default function MetricsPage() {
                     ))}
                   </tbody>
                 </table>
-</div>
                 <p className="note">
                   The observed column is population-weighted. The frame keeps 50%
                   of logged-out edits and 3% of registered ones, so the raw sample
@@ -425,8 +421,7 @@ export default function MetricsPage() {
               <p className="muted">No runs recorded yet.</p>
             ) : (
               <>
-                <div className="scroller">
-<table>
+                <table>
                   <thead>
                     <tr>
                       <th scope="col">Computed</th>
@@ -455,7 +450,6 @@ export default function MetricsPage() {
                     ))}
                   </tbody>
                 </table>
-</div>
                 <p className="note">
                   Every row carries its own sample size. A series of PR-AUC values
                   without them looks like a trend when it is mostly the sample
