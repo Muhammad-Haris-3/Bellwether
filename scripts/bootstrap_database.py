@@ -103,6 +103,13 @@ FORBIDDEN: list[tuple[str, str]] = [
     (WRITER, "DELETE FROM outcome.labels WHERE revid = -1"),
     (WRITER, "DELETE FROM landing.rc_events WHERE revid = -1"),
     (WRITER, "DELETE FROM outcome.label_checks WHERE revid = -1"),
+    # M3 D-2. The register is the whole forecasting record, and "we granted
+    # INSERT only" is a claim about a catalogue rather than about this server.
+    # A published prediction that could be edited after the outcome arrived is
+    # not a prediction, so the inability is demonstrated here rather than
+    # asserted in a migration nobody re-runs.
+    (WRITER, "UPDATE register.predictions SET score = 0 WHERE revid = -1"),
+    (WRITER, "DELETE FROM register.predictions WHERE revid = -1"),
     (READER, "DELETE FROM landing.rc_events WHERE revid = -1"),
     (READER, "INSERT INTO landing.cursors (job, position_utc) VALUES ('probe', now())"),
 ]
