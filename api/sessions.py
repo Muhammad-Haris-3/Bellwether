@@ -79,7 +79,24 @@ def _app_connection() -> psycopg.Connection:
             status_code=503,
             detail="Authentication is not configured on this deployment.",
         )
-    return psycopg.connect(settings.app_database_url, row_factory=dict_row)
+    try:
+        return psycopg.connect(settings.app_database_url, row_factory=dict_row)
+    except psycopg.OperationalError as exc:
+        # A wrong credential here surfaced as an unhandled 500, and FastAPI's
+        # exception path attaches no CORS headers — so the browser could not
+        # read the response at all and reported "Failed to fetch". The server
+        # was broken and the page blamed the network.
+        #
+        # The class name only. psycopg puts the host, the user and sometimes
+        # the whole connection string into these messages, and this endpoint is
+        # public.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The application cannot reach its database. Check "
+                "BELLWETHER_APP_DATABASE_URL on the deployment."
+            ),
+        ) from exc
 
 
 def acting_connection(user: dict[str, Any]) -> psycopg.Connection:
@@ -93,9 +110,17 @@ def acting_connection(user: dict[str, Any]) -> psycopg.Connection:
     The setting is always a bound parameter, never formatted into the string. It
     is the one value every policy in the schema trusts, and building it by
     concatenation would be an injection straight into the access-control model.
+
+    `is_local = true`, so it dies with the transaction. Session-level — which is
+    what the first version used — survives on the backend after the transaction
+    ends, and a pooled connection hands that same backend to the next request.
+    The next request could be a different user, or nobody at all, and it would
+    inherit an identity every policy in this schema trusts. That is not a style
+    preference; it is the difference between a scoped credential and a leaked
+    one.
     """
     conn = _app_connection()
-    conn.execute("SELECT set_config('bellwether.user_id', %s, false)", (str(user["user_id"]),))
+    conn.execute("SELECT set_config('bellwether.user_id', %s, true)", (str(user["user_id"]),))
     return conn
 
 
@@ -286,7 +311,7 @@ def current_user(
 
         # Touch, so the idle clock tracks use. The acting user must be set for
         # the policy on app.sessions to permit its own update.
-        conn.execute("SELECT set_config('bellwether.user_id', %s, false)", (str(row["user_id"]),))
+        conn.execute("SELECT set_config('bellwether.user_id', %s, true)", (str(row["user_id"]),))
         conn.execute(
             "UPDATE app.sessions SET last_seen_at = now() WHERE session_id = %s",
             (row["session_id"],),
@@ -356,7 +381,7 @@ def sign_out(request: Request, response: Response) -> dict[str, str]:
             ).fetchone()
             if row:
                 conn.execute(
-                    "SELECT set_config('bellwether.user_id', %s, false)", (str(row["user_id"]),)
+                    "SELECT set_config('bellwether.user_id', %s, true)", (str(row["user_id"]),)
                 )
                 conn.execute(
                     "UPDATE app.sessions SET revoked_at = now() WHERE session_id = %s",

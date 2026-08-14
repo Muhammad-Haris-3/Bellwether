@@ -273,3 +273,40 @@ def test_the_session_door_resolves_a_token_and_nothing_else(people: dict[str, An
 
     assert len(mine) == 1 and mine[0]["role"] == "reviewer"
     assert other == []
+
+
+@pytest.mark.db
+def test_the_acting_user_dies_with_its_transaction(people: dict[str, Any]) -> None:
+    """The identity must not outlive the request that established it.
+
+    `set_config(..., false)` is SESSION level. On a pooled connection the
+    backend is handed to the next request with that setting still on it, and
+    the next request may be a different user or nobody at all — inheriting an
+    identity every policy in this schema trusts.
+
+    Transaction-local dies at commit, which is what makes it a scoped
+    credential rather than a leaked one.
+    """
+    with _as_app(None) as conn:
+        conn.execute("SELECT set_config('bellwether.user_id', %s, true)", (str(people["admin"]),))
+        inside = conn.execute("SELECT app.acting_user() AS who").fetchone()
+        assert inside["who"] == people["admin"]
+
+        conn.commit()
+
+        after = conn.execute("SELECT app.acting_user() AS who").fetchone()
+    assert after["who"] is None, "the identity survived its transaction"
+
+
+@pytest.mark.db
+def test_the_application_sets_it_transaction_locally(people: dict[str, Any]) -> None:
+    """Read from the source rather than trusted: a `false` here would be
+    invisible in behaviour until a pooled connection leaked one user's identity
+    into another's request."""
+    import inspect
+
+    from api import sessions
+
+    source = inspect.getsource(sessions)
+    assert "set_config('bellwether.user_id', %s, false)" not in source
+    assert source.count("set_config('bellwether.user_id', %s, true)") >= 3
