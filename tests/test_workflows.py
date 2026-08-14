@@ -24,6 +24,7 @@ SCHEDULED = {
     "metrics.yml": "7 */6 * * *",
     "liftwing.yml": "41 7 * * *",
     "triggers.yml": "31 6 * * *",
+    "decide.yml": "13 8 * * *",
 }
 
 
@@ -176,3 +177,28 @@ def test_no_run_block_contains_a_literal_backslash_n(name: str) -> None:
         for step in job["steps"]:
             run = step.get("run", "")
             assert r"\n" not in run, f"{name}: mangled continuation in {step.get('name', 'a step')}"
+
+
+def test_the_decision_job_checks_rollback_before_promotion() -> None:
+    """Order is the guard, not decoration.
+
+    Evaluating a challenger against a champion that should already have been
+    withdrawn compares it to a model the rule has decided is failing — and a
+    challenger only has to beat THAT to be promoted.
+    """
+    from bellwether import promote
+
+    source = Path(promote.__file__).read_text(encoding="utf-8")
+    main = source[source.index("def main()") :]
+    assert main.index("check_rollback()") < main.index("run(dry_run=")
+
+
+def test_training_and_evaluation_stay_manual_while_deciding_does_not() -> None:
+    """M5 is where the project starts acting unattended, and the line it draws
+    is deliberate: retraining and promotion run on a rule fixed beforehand,
+    while train.yml and evaluate.yml stay manual because they are the places a
+    number could be re-rolled until it was acceptable."""
+    for name in ("train.yml", "evaluate.yml"):
+        assert "schedule" not in _triggers(_load(name)), name
+    for name in ("triggers.yml", "decide.yml"):
+        assert "schedule" in _triggers(_load(name)), name

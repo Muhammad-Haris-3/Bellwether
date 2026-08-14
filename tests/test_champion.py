@@ -111,3 +111,42 @@ def test_the_decision_log_cannot_be_edited_by_the_writer(fresh_db: None) -> None
     held = {g["privilege_type"] for g in grants}
     assert "INSERT" in held
     assert "UPDATE" not in held and "DELETE" not in held and "TRUNCATE" not in held
+
+
+@pytest.mark.db
+def test_the_decisions_endpoint_serves_rejections_too(fresh_db: None) -> None:
+    """M5-FR-32. A log that served promotions by default would answer "what
+    changed" and hide "what was considered and refused" — the question that
+    shows the rule binding rather than being satisfied by everything that
+    reached it."""
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+
+    with connect() as conn:
+        _register(conn, "champ", trained_days_ago=5)
+        _register(conn, "chal", trained_days_ago=1)
+        conn.execute(
+            """
+            INSERT INTO decide.model_decisions
+                (decision, champion_version, challenger_version,
+                 p1_pr_auc_gain, p1_pass, p2_ci_low, p2_ci_high, p2_pass,
+                 p3_matured_positives, p3_pass, p4_shadow_days, p4_pass, p5_pass,
+                 champion_pr_auc, challenger_pr_auc, n_matured, n_positives)
+            VALUES ('reject', 'champ', 'chal', 0.004, false, -0.01, 0.02, false,
+                    120, false, 1.5, false, true, 0.25, 0.254, 3000, 120)
+            """
+        )
+
+    body = TestClient(app).get("/decisions").json()
+    assert body["counts"]["reject"] == 1
+    assert len(body["decisions"]) == 1
+
+    decision = body["decisions"][0]
+    # Reconstructible from the row alone (M5-FR-31): every condition's measured
+    # value and verdict, without needing the database to interpret it.
+    assert set(decision["conditions"]) == {"P-1", "P-2", "P-3", "P-4", "P-5"}
+    assert decision["conditions"]["P-1"]["measured"] == 0.004
+    assert decision["conditions"]["P-1"]["pass"] is False
+    assert decision["conditions"]["P-3"]["measured"] == 120
+    assert all("what" in decision["conditions"][p] for p in ("P-1", "P-2", "P-3", "P-4"))

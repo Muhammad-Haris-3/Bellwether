@@ -1,0 +1,71 @@
+name: Decide
+
+# Daily, and this is the job that can change what serves production.
+#
+# Two decisions in one run, in this order:
+#
+#   1. Rollback. If the model promoted in the last 14 days has fallen below its
+#      predecessor's registered level, the predecessor is restored.
+#   2. Promotion. If a challenger is in shadow, the five pre-registered
+#      conditions are evaluated and the result recorded either way.
+#
+# Rollback first, because evaluating a challenger against a champion that should
+# already have been withdrawn compares it to a model the rule has decided is
+# failing.
+#
+# Runs after Triggers (06:31) and Metrics, so a challenger created this morning
+# is in shadow before this asks about it — though it will fail P-4 for another
+# week, which is the point.
+#
+# A rejection is a successful run. This workflow going green while recording
+# "reject" is the system working: the rule was applied and the challenger did
+# not clear it.
+on:
+  schedule:
+    - cron: "13 8 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Evaluate and print; write no decision"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: decide
+  cancel-in-progress: false
+
+jobs:
+  decide:
+    name: Rollback, then promotion
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      BELLWETHER_DATABASE_URL: ${{ secrets.BELLWETHER_DATABASE_URL }}
+      BELLWETHER_ENV: production
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements-pipeline.txt -r requirements-scoring.txt
+
+      - name: Decide
+        run: |
+          set -o pipefail
+          python -m bellwether.promote \
+            ${{ inputs.dry_run == true && '--dry-run' || '' }} 2>&1 | tee decide-output.txt
+
+      - name: Surface the failure
+        if: failure()
+        run: |
+          DETAIL=$(tail -40 decide-output.txt 2>/dev/null \
+            | sed 's/%/%25/g; s/\r//g' \
+            | awk '{printf "%s%%0A", $0}')
+          echo "::error title=decide failed::$DETAIL"

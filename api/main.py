@@ -905,3 +905,163 @@ def calibration_view(window: str = "7d", population: str = "all") -> dict[str, A
             "for anything facing production."
         ),
     }
+
+
+# --- M5: the decision log --------------------------------------------------
+
+# Every decision, whole (M5-FR-32).
+#
+# Including rejections, and deliberately not paginated or filtered by outcome.
+# A log that serves promotions by default answers "what changed" and hides "what
+# was considered and refused", which is the question that shows the rule binding
+# rather than being satisfied by everything that reached it.
+DECISIONS_SQL = """
+SELECT decision_id, decided_at, decision, champion_version, challenger_version,
+       trigger_reason,
+       p1_pr_auc_gain, p1_pass, p2_ci_low, p2_ci_high, p2_pass,
+       p3_matured_positives, p3_pass, p4_shadow_days, p4_pass,
+       p5_ece_regression, p5_worst_segment, p5_worst_segment_regression, p5_pass,
+       champion_pr_auc, challenger_pr_auc, n_matured, n_positives,
+       prereg_commit, code_commit
+  FROM decide.model_decisions
+ ORDER BY decided_at DESC
+"""
+
+CHAMPION_HISTORY_SQL = """
+SELECT model_version, effective_from, replaced, decision_id
+  FROM decide.champion_history
+ ORDER BY effective_from DESC, history_id DESC
+ LIMIT 20
+"""
+
+# The evaluations that decide whether a challenger exists at all. Included
+# because a decision log without them answers "why was this promoted" and not
+# "why was anything trained", and the second question is where an unattended
+# system is least explicable after the fact.
+RECENT_TRIGGERS_SQL = """
+SELECT window_day, champion_version, rolling_pr_auc, baseline_pr_auc, pr_auc_drop,
+       max_psi, max_psi_feature, days_since_train, decay_breached, drift_breached,
+       floor_breached, decay_streak, drift_streak, fired, fired_reason, n_matured
+  FROM decide.trigger_evaluations
+ ORDER BY window_day DESC
+ LIMIT 14
+"""
+
+
+def _decision(row: dict[str, Any]) -> dict[str, Any]:
+    """One decision, reconstructible from this alone (M5-FR-31).
+
+    Every condition's measured value and verdict travels with it. A decision
+    that needs the database to interpret is one only its owner can check, which
+    is the standard the metric card, the artifact digest in git and the monthly
+    seal are all held to.
+    """
+    return {
+        "decision_id": row["decision_id"],
+        "decided_at": row["decided_at"],
+        "decision": row["decision"],
+        "champion": row["champion_version"],
+        "challenger": row["challenger_version"],
+        "reason": row["trigger_reason"],
+        "conditions": {
+            "P-1": {
+                "what": "PR-AUC gain over the champion, on the same matured events",
+                "measured": row["p1_pr_auc_gain"],
+                "pass": row["p1_pass"],
+            },
+            "P-2": {
+                "what": "paired bootstrap 95% interval excludes zero",
+                "measured": [row["p2_ci_low"], row["p2_ci_high"]],
+                "pass": row["p2_pass"],
+            },
+            "P-3": {
+                "what": "matured positives accumulated in shadow",
+                "measured": row["p3_matured_positives"],
+                "pass": row["p3_pass"],
+            },
+            "P-4": {
+                "what": "wall-clock days of shadow running",
+                "measured": row["p4_shadow_days"],
+                "pass": row["p4_pass"],
+            },
+            "P-5": {
+                "what": "calibration and no segment regression",
+                "ece_regression": row["p5_ece_regression"],
+                "worst_segment": row["p5_worst_segment"],
+                "worst_segment_regression": row["p5_worst_segment_regression"],
+                "pass": row["p5_pass"],
+            },
+        },
+        "champion_pr_auc": row["champion_pr_auc"],
+        "challenger_pr_auc": row["challenger_pr_auc"],
+        "n_matured": row["n_matured"],
+        "n_positives": row["n_positives"],
+        "code_commit": row["code_commit"],
+    }
+
+
+@app.get("/decisions")
+def decisions_view() -> dict[str, Any]:
+    """What this system decided about itself, and why (M5-FR-32).
+
+    The point of M5 is a model that maintains itself unattended. The only thing
+    that makes that defensible rather than alarming is that the rule was written
+    down before any model existed and every decision it makes is recorded with
+    the evidence that produced it — including the ones where it refused.
+    """
+    with _connect() as conn:
+        decisions = conn.execute(DECISIONS_SQL).fetchall()
+        history = conn.execute(CHAMPION_HISTORY_SQL).fetchall()
+        evaluations = conn.execute(RECENT_TRIGGERS_SQL).fetchall()
+
+    counts = {"promote": 0, "reject": 0, "rollback": 0}
+    for row in decisions:
+        counts[row["decision"]] = counts.get(row["decision"], 0) + 1
+
+    return {
+        "serving": history[0]["model_version"] if history else None,
+        "counts": counts,
+        "decisions": [_decision(row) for row in decisions],
+        "champion_history": [
+            {
+                "model_version": row["model_version"],
+                "effective_from": row["effective_from"],
+                "replaced": row["replaced"],
+                "decision_id": row["decision_id"],
+            }
+            for row in history
+        ],
+        "recent_trigger_evaluations": [
+            {
+                "day": row["window_day"],
+                "champion": row["champion_version"],
+                "rolling_pr_auc": row["rolling_pr_auc"],
+                "baseline_pr_auc": row["baseline_pr_auc"],
+                "drop": row["pr_auc_drop"],
+                "worst_psi": row["max_psi"],
+                "worst_psi_feature": row["max_psi_feature"],
+                "days_since_train": row["days_since_train"],
+                "breached": {
+                    "decay": row["decay_breached"],
+                    "drift": row["drift_breached"],
+                    "floor": row["floor_breached"],
+                },
+                "streaks": {"decay": row["decay_streak"], "drift": row["drift_streak"]},
+                "fired": row["fired"],
+                "reason": row["fired_reason"],
+                "n_matured": row["n_matured"],
+            }
+            for row in evaluations
+        ],
+        "note": (
+            "Every decision, including rejections, which are the more informative "
+            "rows: a log holding only promotions answers what changed and cannot "
+            "answer what was considered and refused. Each carries every condition's "
+            "measured value and verdict, so it can be checked without database "
+            "access. The conditions themselves were fixed in PREREGISTRATION.md "
+            "before the first model was trained, and the constants are asserted "
+            "against that document by the test suite. Trigger evaluations are "
+            "included because a decision log without them explains why a model was "
+            "promoted but not why anything was trained."
+        ),
+    }
