@@ -177,6 +177,11 @@ SCHEMA_EXPECTATIONS = {
     "015_m3_reproducibility": (
         "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
     ),
+    "017_m4_metrics": (
+        "SELECT to_regclass('outcome.prediction_metrics') IS NOT NULL"
+        "   AND to_regclass('outcome.calibration_bins') IS NOT NULL"
+        "   AND to_regclass('outcome.liftwing_scores') IS NOT NULL AS present"
+    ),
     "016_m3_reproduction_scope": (
         "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
         "                WHERE table_schema = 'register' AND table_name = 'reproductions'"
@@ -703,5 +708,157 @@ def register_view() -> dict[str, Any]:
                     "rather than scoring differently."
                 ),
             }
+        ),
+    }
+
+
+# --- M4: continuous evaluation ---------------------------------------------
+
+# The most recent run only. Every earlier run is still in the table — it is
+# append-only — but a page that averaged them would smooth over the moment a
+# number started moving, which is the only moment worth catching.
+LATEST_METRICS_SQL = """
+WITH latest AS (SELECT max(computed_at) AS at FROM outcome.prediction_metrics)
+SELECT m.*
+  FROM outcome.prediction_metrics m, latest
+ WHERE m.computed_at = latest.at
+ ORDER BY m.window_label, m.segment, m.segment_level
+"""
+
+CALIBRATION_SQL = """
+SELECT b.bin_index, b.bin_low, b.bin_high, b.n, b.mean_predicted,
+       b.observed_rate, b.weighted_observed_rate, m.window_label, m.computed_at,
+       m.maturity_hours, m.provisional, m.n AS window_n
+  FROM outcome.calibration_bins b
+  JOIN outcome.prediction_metrics m ON m.metric_id = b.metric_id
+ WHERE m.computed_at = (SELECT max(computed_at) FROM outcome.prediction_metrics)
+   AND m.window_label = %(window)s
+   AND m.segment = 'all'
+ ORDER BY b.bin_index
+"""
+
+
+def _metric_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Every metric carries `n`, an interval, and the maturity window it used
+    (M4-FR-1). A point estimate published alone invites a conclusion the early
+    cohorts cannot support."""
+    return {
+        "segment": row["segment"],
+        "level": row["segment_level"],
+        "n": row["n"],
+        "n_positives": row["n_positives"],
+        "base_rate": row["base_rate"],
+        "weighted_base_rate": row["weighted_base_rate"],
+        "pr_auc": row["pr_auc"],
+        "pr_auc_ci": [row["pr_auc_ci_low"], row["pr_auc_ci_high"]],
+        "roc_auc": row["roc_auc"],
+        "brier": row["brier"],
+        "baseline_pr_auc": row["baseline_pr_auc"],
+        "margin": row["margin"],
+        "margin_ci": [row["margin_ci_low"], row["margin_ci_high"]],
+    }
+
+
+@app.get("/metrics")
+def metrics_view() -> dict[str, Any]:
+    """Live performance on the predictions this system actually made (M4-FR-22).
+
+    Not the same thing as `/kc2`, and the difference is the point. `/kc2` is an
+    offline backtest over a backfilled census; this grades forecasts committed
+    to an append-only register before the answer existed. Where they disagree,
+    this one is true.
+    """
+    with _connect() as conn:
+        rows = conn.execute(LATEST_METRICS_SQL).fetchall()
+
+    if not rows:
+        return {
+            "computed": False,
+            "note": (
+                "No metrics yet. The register is younger than the maturity window, "
+                "so nothing in it can be graded."
+            ),
+        }
+
+    windows: dict[str, Any] = {}
+    for row in rows:
+        bucket = windows.setdefault(
+            row["window_label"],
+            {
+                "window": [row["window_start"], row["window_end"]],
+                "maturity_hours": row["maturity_hours"],
+                "provisional": row["provisional"],
+                # M4-FR-2: exclusions are published, never applied silently.
+                # excluded_late_base_rate is the one to read — those rows are
+                # not a random sample, they concentrate in edits reverted fast,
+                # so the exclusion selects on the outcome it is protecting.
+                "excluded": {
+                    "immature": row["excluded_immature"],
+                    "late": row["excluded_late"],
+                    "late_base_rate": row["excluded_late_base_rate"],
+                },
+                "aggregate": None,
+                "segments": [],
+            },
+        )
+        if row["segment"] == "all":
+            bucket["aggregate"] = _metric_row(row)
+        else:
+            bucket["segments"].append(_metric_row(row))
+
+    return {
+        "computed": True,
+        "computed_at": rows[0]["computed_at"],
+        "code_commit": rows[0]["code_commit"],
+        "windows": windows,
+        "note": (
+            "Live figures on register predictions. Distinct from /kc2, which is an "
+            "offline backtest over a backfilled census — the two measure different "
+            "populations and neither replaces the other. Segments are diagnosis and "
+            "are never a headline result (M4-FR-14). Provisional while the maturity "
+            "window is a 48h placeholder; see /maturity."
+        ),
+    }
+
+
+@app.get("/calibration")
+def calibration_view(window: str = "7d") -> dict[str, Any]:
+    """Whether a score of 0.9 means what it says (M4-FR-23).
+
+    Both rates are served. The frame keeps 50% of logged-out edits and 3% of
+    registered ones, so the raw sample frequency is around four times the
+    population's — a model calibrated against it would be calibrated to a
+    population that does not exist and would overstate risk in production by
+    roughly that factor.
+    """
+    with _connect() as conn:
+        rows = conn.execute(CALIBRATION_SQL, {"window": window}).fetchall()
+
+    if not rows:
+        return {"computed": False, "window": window, "note": "No calibration curve yet."}
+
+    return {
+        "computed": True,
+        "window": window,
+        "computed_at": rows[0]["computed_at"],
+        "maturity_hours": rows[0]["maturity_hours"],
+        "provisional": rows[0]["provisional"],
+        "n": rows[0]["window_n"],
+        "bins": [
+            {
+                "range": [b["bin_low"], b["bin_high"]],
+                "n": b["n"],
+                "mean_predicted": b["mean_predicted"],
+                "observed_rate": b["observed_rate"],
+                "weighted_observed_rate": b["weighted_observed_rate"],
+            }
+            for b in rows
+        ],
+        "note": (
+            "Equal-width bins, not quantiles: the question is whether 0.9 means what "
+            "it says, and quantile edges would move every run so two runs could not be "
+            "compared. Empty bins are published — a bin holding four events and one "
+            "holding four thousand look identical without n. Use weighted_observed_rate "
+            "for anything facing production."
         ),
     }

@@ -1,0 +1,63 @@
+name: Metrics
+
+# Every six hours.
+#
+# Grades the predictions the register already holds, against outcomes that keep
+# arriving. More often than daily because maturity is continuous: a prediction
+# written this morning becomes gradeable tonight, and a metric that only moves
+# once a day is a metric that is wrong for most of the day.
+#
+# This job MEASURES. It does not touch the champion, and it must never grow a
+# path that does — the moment evaluation feeds back into model selection outside
+# M5's pre-registered rule, every number the project has published becomes an
+# in-sample number.
+on:
+  schedule:
+    - cron: "7 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      maturity_hours:
+        description: "Maturity window in hours (48 is the M2 placeholder)"
+        required: false
+        default: "48"
+
+concurrency:
+  group: metrics
+  cancel-in-progress: false
+
+jobs:
+  metrics:
+    name: Grade matured predictions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      BELLWETHER_DATABASE_URL: ${{ secrets.BELLWETHER_DATABASE_URL }}
+      BELLWETHER_ENV: production
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      # scikit-learn is needed for the ranking metrics, not for a model: this
+      # job never loads one.
+      - name: Install
+        run: pip install -r requirements-pipeline.txt -r requirements-scoring.txt
+
+      - name: Compute
+        run: |
+          set -o pipefail
+          python -m bellwether.metrics \
+            --maturity-hours "${{ inputs.maturity_hours || '48' }}" 2>&1 | tee metrics-output.txt
+
+      - name: Surface the failure
+        if: failure()
+        run: |
+          DETAIL=$(tail -40 metrics-output.txt 2>/dev/null \
+            | sed 's/%/%25/g; s/\r//g' \
+            | awk '{printf "%s%%0A", $0}')
+          echo "::error title=metrics failed::$DETAIL"

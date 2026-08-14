@@ -21,6 +21,7 @@ SCHEDULED = {
     "maintain.yml": "17 3 * * *",
     "reconcile.yml": "23 4 * * *",
     "reproduce.yml": "19 5 * * *",
+    "metrics.yml": "7 */6 * * *",
 }
 
 
