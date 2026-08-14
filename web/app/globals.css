@@ -15,8 +15,14 @@
   --warn-bg: rgba(245, 158, 11, 0.1);
   --bad: #ef4444;
   --bad-bg: rgba(239, 68, 68, 0.1);
-  --accent: #6366f1;
-  --accent-hover: #4f46e5;
+  /* indigo-400 rather than indigo-500.
+     #6366f1 measured 4.29:1 against this background — below WCAG AA's 4.5 for
+     normal text, and this token colours every link on the site. NFR-12 commits
+     to AA, so the accent is lifted one step to 6.42:1. The hover is lifted with
+     it, because a hover state darker than the resting one fails on the state a
+     keyboard user lands in. */
+  --accent: #818cf8;
+  --accent-hover: #a5b4fc;
   --accent-glow: rgba(99, 102, 241, 0.2);
   --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -669,6 +675,29 @@ main ul li {
 }
 
 /* Scroll reveal CSS animations */
+/* Content is visible by default and only hidden once JavaScript has taken over.
+   The reveal used to start at opacity 0 unconditionally, which meant a reader
+   with JavaScript disabled — or one whose hydration failed — got a blank page
+   on every route. The HTML was all there and none of it could be seen. */
+@media (scripting: none) {
+  .scroll-reveal {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+
+/* WCAG 2.3.3. Motion is decoration here; the content is identical without it,
+   and someone who has asked their operating system for less of it should not
+   have to watch eight hundred milliseconds of travel on every section. */
+@media (prefers-reduced-motion: reduce) {
+  .scroll-reveal,
+  .scroll-reveal.reveal-active {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
+}
+
 .scroll-reveal {
   opacity: 0;
   transform: translateY(24px);
