@@ -82,6 +82,23 @@ def _app_connection() -> psycopg.Connection:
     return psycopg.connect(settings.app_database_url, row_factory=dict_row)
 
 
+def acting_connection(user: dict[str, Any]) -> psycopg.Connection:
+    """A connection with the acting user set, so the policies decide.
+
+    Every authenticated query goes through this. The role checks elsewhere in
+    this module produce a clean 403 instead of an empty result, but they are not
+    what enforces anything — D-3 requires that deleting them changes what a user
+    is TOLD and never what they can do.
+
+    The setting is always a bound parameter, never formatted into the string. It
+    is the one value every policy in the schema trusts, and building it by
+    concatenation would be an injection straight into the access-control model.
+    """
+    conn = _app_connection()
+    conn.execute("SELECT set_config('bellwether.user_id', %s, false)", (str(user["user_id"]),))
+    return conn
+
+
 def _rate_limited(key: str) -> bool:
     now = time.monotonic()
     recent = [at for at in _attempts[key] if now - at < SIGNIN_WINDOW_SECONDS]
@@ -288,11 +305,8 @@ def require_role(*allowed: str):
     DO.
     """
 
-    def dependency(
-        request: Request,
-        user: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        user = user or current_user(request.cookies.get(SESSION_COOKIE))
+    def dependency(request: Request) -> dict[str, Any]:
+        user = current_user(request.cookies.get(SESSION_COOKIE))
         if user is None:
             raise HTTPException(status_code=401, detail="Sign in first.")
         if user["role"] not in allowed:

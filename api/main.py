@@ -24,7 +24,7 @@ import psycopg
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import sessions
+from api import review, sessions
 from bellwether.config import get_settings
 from bellwether.schema import SCHEMA_EXPECTATIONS
 
@@ -35,13 +35,25 @@ app = FastAPI(
 )
 
 # The frontend is served from a different origin (Vercel), so the browser needs
-# permission to read these responses. Everything here is public and read-only.
+# permission to read these responses.
+#
+# Named origins rather than a wildcard, and credentials allowed, because the
+# session cookie has to travel: a cookie-bearing cross-origin request requires
+# Access-Control-Allow-Credentials, and every browser refuses that alongside
+# Access-Control-Allow-Origin: *. The public endpoints were fine with a
+# wildcard; the moment one endpoint authenticates, none of them can have one.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET"],
-    allow_headers=["*"],
+    allow_origins=[
+        get_settings().frontend_origin,
+        "http://localhost:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["content-type", sessions.CSRF_HEADER],
 )
+
+app.include_router(review.router)
 
 STATS_SQL = """
 SELECT

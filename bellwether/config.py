@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     # unconfigured deployment should serve the read-only pages rather than fail
     # to start.
     app_database_url: str = ""
+
+    # Where the browser app is served from. Needed by name rather than as a
+    # wildcard: a cookie-bearing cross-origin request requires
+    # Access-Control-Allow-Credentials, and every browser rejects that
+    # alongside Access-Control-Allow-Origin: *.
+    frontend_origin: str = "https://bellwether-phi.vercel.app"
     env: str = "local"
 
     # Left empty so the hosting platform's own build identifier can fill it in;
