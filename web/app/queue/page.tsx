@@ -147,23 +147,53 @@ export default function QueuePage() {
           <Link href="/">Status</Link> · <span aria-current="page">Queue</span>
         </nav>
         <h1>Queue</h1>
-        <div className="loading">
-          <div>Waking the API… {waited}s</div>
-          {waited >= COLD_START_HINT_AFTER_SECONDS && (
+
+        {/*
+          The error goes ABOVE the waiting state, and the waiting state stops
+          claiming to wait once there is one.
+
+          The first version rendered "Waking the API…" whenever `me` was null,
+          which is also true when the request FAILED. A CORS rejection then
+          looked exactly like a slow container: the page sat at 0s forever and
+          said the API was starting up, while the API was awake and answering in
+          milliseconds. A loading state that cannot be interrupted by a failure
+          is a loading state that lies.
+        */}
+        {error && (
+          <div className="loading">
+            <div className="bad">Could not reach the API — {error}</div>
             <p className="note">
-              The API runs on a free tier that stops when idle. A cold start
-              takes up to a minute. This is the first request after a quiet
-              period, not a failure.
+              The API answering directly but not from this page usually means
+              the browser blocked the request: the deployment&rsquo;s allowed
+              origin does not match{" "}
+              <code>{typeof window !== "undefined" ? window.location.origin : ""}</code>.
+              The browser console will say so.
             </p>
-          )}
-          <div className="bar">
-            <div
-              style={{
-                width: `${Math.min(100, (waited / COLD_START_BUDGET_SECONDS) * 100)}%`,
-              }}
-            />
+            <p className="note">
+              <button onClick={() => void loadMe()}>Try again</button>
+            </p>
           </div>
-        </div>
+        )}
+
+        {!error && (
+          <div className="loading">
+            <div>Waking the API… {waited}s</div>
+            {waited >= COLD_START_HINT_AFTER_SECONDS && (
+              <p className="note">
+                The API runs on a free tier that stops when idle. A cold start
+                takes up to a minute. This is the first request after a quiet
+                period, not a failure.
+              </p>
+            )}
+            <div className="bar">
+              <div
+                style={{
+                  width: `${Math.min(100, (waited / COLD_START_BUDGET_SECONDS) * 100)}%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
       </main>
     );
   }
