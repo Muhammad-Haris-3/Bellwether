@@ -54,6 +54,12 @@ SCHEMA_EXPECTATIONS = {
     "015_m3_reproducibility": (
         "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
     ),
+    "021_m5_segment_bands": (
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
+        "                WHERE table_schema = 'register'"
+        "                  AND table_name = 'model_registry'"
+        "                  AND column_name = 'segment_bands') AS present"
+    ),
     "020_m5_decisions": (
         "SELECT to_regclass('decide.model_decisions') IS NOT NULL"
         "   AND to_regclass('decide.trigger_evaluations') IS NOT NULL"

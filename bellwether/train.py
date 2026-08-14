@@ -28,7 +28,7 @@ from typing import Any
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import average_precision_score, brier_score_loss
 
-from bellwether import evaluate, knowability, registry
+from bellwether import evaluate, knowability, promote, registry
 from bellwether.config import get_settings
 from bellwether.db import connect
 from bellwether.runlog import RunContext, new_run_id
@@ -65,6 +65,20 @@ def run(*, window_start: str, window_end: str) -> dict[str, Any]:
     matrix, labels, names = evaluate.build_matrix(rows)
     version = version_for(start, end, settings.build_id)
 
+    # M5-FR-6. The quartile boundaries P-5's segments are cut on, frozen here
+    # with everything else this model is judged against.
+    #
+    # Recomputed per evaluation window they would move under the metric, and a
+    # segment could regress because the bands shifted rather than because the
+    # model did — blocking a promotion, or waving one through, for a reason that
+    # has nothing to do with either model.
+    segment_bands = {
+        "edit_size": promote.bands_for(
+            [abs((r["newlen"] or 0) - (r["oldlen"] or 0)) for r in rows]
+        ),
+        "page_activity": promote.bands_for([float(r.get("page_activity") or 0) for r in rows]),
+    }
+
     model = HistGradientBoostingClassifier(**HYPERPARAMETERS)
     model.fit(matrix, labels)
 
@@ -97,6 +111,7 @@ def run(*, window_start: str, window_end: str) -> dict[str, Any]:
         "artifact_sha256": digest,
         "code_commit": settings.build_id,
         "sklearn_version": __import__("sklearn").__version__,
+        "segment_bands": segment_bands,
     }
     card_file = registry.write_card(version, card)
 
@@ -115,6 +130,7 @@ def run(*, window_start: str, window_end: str) -> dict[str, Any]:
                     "offline_metrics": json.dumps(metrics),
                     "artifact_path": str(artifact.relative_to(registry.MODELS_DIR.parent)),
                     "artifact_sha256": digest,
+                    "segment_bands": json.dumps(segment_bands),
                     "code_commit": settings.build_id,
                     "run_id": run_id,
                 },

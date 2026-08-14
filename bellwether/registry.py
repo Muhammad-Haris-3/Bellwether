@@ -89,7 +89,7 @@ def verify(model_version: str, expected_sha256: str) -> Path:
 # or it measures nothing.
 _MODEL_COLUMNS = """
        m.model_version, m.artifact_sha256, m.feature_names, m.offline_metrics,
-       m.trained_at, m.training_start, m.training_end
+       m.trained_at, m.training_start, m.training_end, m.segment_bands
 """
 
 # M5-FR-24. What the decision log promoted, which is not the same question as
@@ -174,9 +174,9 @@ INSERT_MODEL_SQL = """
 INSERT INTO register.model_registry
     (model_version, training_start, training_end, n_train_events, n_train_positives,
      feature_names, hyperparameters, offline_metrics, artifact_path, artifact_sha256,
-     code_commit, registered_by_run)
+     segment_bands, code_commit, registered_by_run)
 VALUES (%(model_version)s, %(training_start)s, %(training_end)s, %(n_train_events)s,
         %(n_train_positives)s, %(feature_names)s, %(hyperparameters)s::jsonb,
         %(offline_metrics)s::jsonb, %(artifact_path)s, %(artifact_sha256)s,
-        %(code_commit)s, %(run_id)s)
+        %(segment_bands)s::jsonb, %(code_commit)s, %(run_id)s)
 """

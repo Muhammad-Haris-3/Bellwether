@@ -79,6 +79,14 @@ SELECT e.revid, e.old_revid, e.event_ts, e.ns, e.title, e.user_name, e.user_id,
        e.is_anon, e.is_temp, e.is_minor, e.is_bot, e.comment, e.comment_hidden,
        e.oldlen, e.newlen, e.tags, e.sampling_stratum, e.sampling_weight,
        (e.tags && ARRAY['mw-undo','mw-rollback','mw-manual-revert']) AS is_reverting,
+       -- Edits to this page in the 7 days before this one. Not a feature: it is
+       -- one of the pre-registered decision segments (PREREGISTRATION.md 4),
+       -- and its quartile boundaries are frozen from the training window so a
+       -- segment cannot regress because the bands moved (M5-FR-6).
+       (SELECT count(*) FROM landing.rc_events prior
+         WHERE prior.title = e.title
+           AND prior.event_ts <  e.event_ts
+           AND prior.event_ts >= e.event_ts - interval '7 days') AS page_activity,
        -- When this system first KNEW, not when the revert happened. Imported
        -- from state.py so the training matrix and the replay cannot disagree
        -- about it — this module having its own copy of the fold is exactly the
