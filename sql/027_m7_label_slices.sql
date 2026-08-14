@@ -102,7 +102,14 @@ GRANT USAGE, SELECT ON SEQUENCE outcome.label_agreement_agreement_id_seq TO bell
 -- The same narrow-door pattern as sql/023: a function that returns exactly what
 -- the study needs — verdict, slice, and the proxy outcome — and cannot be asked
 -- who judged what. Reviewer identity leaves as a COUNT and never as a name.
-CREATE OR REPLACE FUNCTION outcome.labels_for_agreement(p_maturity_seconds integer)
+-- Dropped before creating, because migrations re-run on every bootstrap and a
+-- LATER one (029) widens this function's return type. Without the drop, this
+-- file tries to shrink it back on the second run and Postgres refuses with
+-- "cannot change return type of existing function" — a migration that applied
+-- cleanly once and fails forever afterwards.
+DROP FUNCTION IF EXISTS outcome.labels_for_agreement(integer);
+
+CREATE FUNCTION outcome.labels_for_agreement(p_maturity_seconds integer)
 RETURNS TABLE (
     revid        bigint,
     queue_slice  text,

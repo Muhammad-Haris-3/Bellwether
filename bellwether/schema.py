@@ -77,6 +77,11 @@ SCHEMA_EXPECTATIONS = {
     "015_m3_reproducibility": (
         "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
     ),
+    "029_m7_outcome_blinding": (
+        "SELECT "
+        + _column("outcome", "label_agreement", "excluded_outcome_visible")
+        + " AS present"
+    ),
     "028_m7_human_label_training": (
         "SELECT "
         + _column("register", "model_registry", "human_labels")

@@ -317,3 +317,33 @@ def test_the_training_door_never_returns_who_judged(fresh_db: None) -> None:
         ).fetchone()
     assert "user_id" not in (columns["proargnames"] or [])
     assert "reviewer" not in (columns["proargnames"] or [])
+
+
+def test_a_verdict_given_with_the_answer_visible_is_excluded() -> None:
+    """The human version of M3-FR-10.
+
+    The queue used to show an Outcome column, so a reviewer judging a settled
+    edit was agreeing with the answer in front of them. Their verdict is not
+    independent evidence about the edit, and including it would inflate kappa
+    toward 1 for a reason that means nothing.
+
+    Counted rather than dropped, like every other exclusion here, because the
+    direction of its bias is not subtle: these agree with the proxy by
+    construction.
+    """
+    blind = _agreeing(120)
+    seen = [{**_label("bad_edit", reverted=True), "outcome_was_visible": True} for _ in range(40)]
+
+    result = agreement.study(blind + seen, queue_slice="random", unsure_policy="excluded")
+
+    assert result["excluded_outcome_visible"] == 40
+    assert result["n"] == 120, "only the blinded verdicts enter the matrix"
+
+
+def test_a_blinded_verdict_is_kept() -> None:
+    """The control. Without it the exclusion could be dropping everything."""
+    rows = [{**row, "outcome_was_visible": False} for row in _agreeing(120)]
+    result = agreement.study(rows, queue_slice="random", unsure_policy="excluded")
+
+    assert result["excluded_outcome_visible"] == 0
+    assert result["n"] == 120

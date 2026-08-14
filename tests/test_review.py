@@ -135,8 +135,17 @@ def test_a_matured_item_reports_its_outcome(world: dict[str, Any]) -> None:
     body = _signed_in("viewer").get("/queue", params={"hours": 336}).json()
     old = next(i for i in body["items"] if i["title"] == "Old")
 
+    # Matured is visible; the OUTCOME is not, until this reviewer has answered.
+    # Showing it beforehand would put the answer next to the question, and the
+    # agreement study would measure a reviewer agreeing with a label.
     assert old["matured"] is True
-    assert old["reverted"] is True
+    assert old["reverted"] is None
+
+    client = _signed_in("reviewer")
+    client.post("/labels", json={"revid": 2, "verdict": "bad_edit", "confidence": "high"})
+    after = client.get("/queue", params={"hours": 336}).json()
+    judged = next(i for i in after["items"] if i["revid"] == 2)
+    assert judged["reverted"] is True, "revealed once the verdict is committed"
 
 
 @pytest.mark.db

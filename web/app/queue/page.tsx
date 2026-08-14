@@ -113,7 +113,17 @@ export default function QueuePage() {
   useEffect(() => {
     if (!me?.authenticated) return;
     void loadQueue();
-    timer.current = setInterval(() => void loadQueue(), POLL_SECONDS * 1000);
+
+    // Only while this tab is actually being looked at.
+    //
+    // A reviewer opens a diff in another tab and comes back a minute later;
+    // refreshing underneath them replaces the list they were working through.
+    // The row order is stable now, but a poll can still add or drop rows, and
+    // there is no reason to refresh a page nobody is reading.
+    const tick = () => {
+      if (document.visibilityState === "visible") void loadQueue();
+    };
+    timer.current = setInterval(tick, POLL_SECONDS * 1000);
     return () => {
       if (timer.current) clearInterval(timer.current);
     };
@@ -307,7 +317,7 @@ export default function QueuePage() {
                   </a>
                   <div className="note">
                     {item.byte_delta >= 0 ? "+" : ""}
-                    {item.byte_delta} bytes
+                    {item.byte_delta} bytes · rev {item.revid}
                     {item.comment ? ` · ${item.comment.slice(0, 60)}` : ""}
                   </div>
                 </td>

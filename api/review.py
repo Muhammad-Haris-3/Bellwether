@@ -18,7 +18,7 @@ queue links to /metrics, which computes over matured predictions only.
 
 from __future__ import annotations
 
-import random
+import hashlib
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -215,6 +215,16 @@ _offered: dict[tuple[str, int], str] = {}
 _OFFERED_LIMIT = 20_000
 
 
+def _shuffle_key(revid: int) -> str:
+    """A stable, rank-free position for a row.
+
+    Deterministic on purpose: the same revision sits in the same place on every
+    refresh, so the list does not rearrange under a reviewer who is reading a
+    diff. Unrelated to score, so position still says nothing about rank.
+    """
+    return hashlib.blake2b(str(revid).encode(), digest_size=8).hexdigest()
+
+
 def _remember(user_id: Any, revid: int, slice_name: str) -> None:
     if len(_offered) > _OFFERED_LIMIT:
         _offered.clear()
@@ -310,22 +320,39 @@ def queue(
                     "byte_delta": row["byte_delta"],
                     "comment": row["comment"],
                     "matured": matured_row,
-                    # Null until it is real. A false here would read as "this
-                    # edit survived", which is not the same as "nobody has
-                    # checked".
-                    "reverted": bool(row["reverted"]) if matured_row else None,
+                    # Null until it is real AND until this reviewer has
+                    # answered.
+                    #
+                    # Two different reasons for the same null. An unmatured
+                    # edit has no outcome — a false would read as "this edit
+                    # survived", which is not the same as "nobody has checked".
+                    # And a settled edit shown BEFORE the verdict would be the
+                    # answer displayed next to the question: the reviewer would
+                    # agree with it, and the agreement study would measure
+                    # nothing. That is the human version of M3-FR-10, which
+                    # already refuses to count a prediction written after its
+                    # own outcome became visible.
+                    "reverted": bool(row["reverted"]) if (matured_row and judged) else None,
                     "my_verdict": row["my_verdict"],
                     "my_judged_at": row["my_judged_at"],
                 }
             )
 
-    # Shuffled, so position cannot reveal rank.
+    # Ordered so position cannot reveal rank, and STABLY so.
     #
     # Sorting by score would put every randomly drawn row at the bottom, and a
     # reviewer would learn the slice from where a row sat even without seeing
-    # the number. The batch is still mostly high-risk — triage happens at the
-    # batch level rather than row by row.
-    random.shuffle(items)
+    # the number.
+    #
+    # But `random.shuffle` reordered the page on every 30-second poll, so a
+    # reviewer reading a diff in another tab came back to find the row moved or
+    # gone. A queue that rearranges itself under someone mid-judgement is not
+    # usable, and the fix is not to stop hiding the rank — it is to hide it the
+    # same way every time.
+    #
+    # Keyed on revid, so a row holds its place across refreshes and a new
+    # arrival slots in without displacing what is already being read.
+    items.sort(key=lambda item: _shuffle_key(item["revid"]))
 
     return {
         "items": items,

@@ -56,11 +56,11 @@ INSERT INTO outcome.label_agreement
     (queue_slice, unsure_policy, n, n_reviewers, n_unsure, unsure_rate,
      both_positive, human_only, proxy_only, both_negative,
      kappa, observed_agreement, expected_agreement, refused_reason,
-     maturity_hours, code_commit, run_id)
+     excluded_outcome_visible, maturity_hours, code_commit, run_id)
 VALUES (%(slice)s, %(policy)s, %(n)s, %(reviewers)s, %(n_unsure)s, %(unsure_rate)s,
         %(both_positive)s, %(human_only)s, %(proxy_only)s, %(both_negative)s,
         %(kappa)s, %(po)s, %(pe)s, %(refused)s,
-        %(maturity_hours)s, %(commit)s, %(run_id)s)
+        %(excluded_outcome_visible)s, %(maturity_hours)s, %(commit)s, %(run_id)s)
 """
 
 
@@ -125,6 +125,18 @@ def study(rows: list[dict[str, Any]], *, queue_slice: str, unsure_policy: str) -
     if queue_slice != "all":
         rows = [r for r in rows if r["queue_slice"] == queue_slice]
 
+    # The human version of M3-FR-10.
+    #
+    # The queue used to show an Outcome column, so a reviewer judging a settled
+    # edit was agreeing with the answer in front of them. Their verdict is not
+    # independent evidence about the edit, and including it would inflate kappa
+    # toward 1 for a reason that means nothing.
+    #
+    # Counted rather than quietly dropped, and the direction of the bias is not
+    # subtle: these agree with the proxy by construction.
+    contaminated = sum(1 for r in rows if r.get("outcome_was_visible"))
+    rows = [r for r in rows if not r.get("outcome_was_visible")]
+
     reviewers = len({r["reviewer"] for r in rows})
     n_unsure = sum(1 for r in rows if r["verdict"] == "unsure")
     counts = confusion(rows, unsure_policy=unsure_policy)
@@ -136,6 +148,7 @@ def study(rows: list[dict[str, Any]], *, queue_slice: str, unsure_policy: str) -
         "n": n_used,
         "reviewers": reviewers,
         "n_unsure": n_unsure,
+        "excluded_outcome_visible": contaminated,
         "unsure_rate": round(n_unsure / len(rows), 6) if rows else None,
         **counts,
         "kappa": None,
