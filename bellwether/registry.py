@@ -81,27 +81,60 @@ def verify(model_version: str, expected_sha256: str) -> Path:
     return path
 
 
-CHAMPION_SQL = """
--- training_start and training_end travel with the champion because the scorer
--- refuses to score inside them: the register measures out-of-sample behaviour
--- or it measures nothing.
-SELECT model_version, artifact_sha256, feature_names, offline_metrics, trained_at,
-       training_start, training_end
-  FROM register.model_registry
- ORDER BY trained_at DESC, model_version DESC
+# The columns every caller needs, in one place, so the two resolvers below
+# cannot answer with different shapes.
+#
+# training_start and training_end travel with the champion because the scorer
+# refuses to score inside them: the register measures out-of-sample behaviour
+# or it measures nothing.
+_MODEL_COLUMNS = """
+       m.model_version, m.artifact_sha256, m.feature_names, m.offline_metrics,
+       m.trained_at, m.training_start, m.training_end
+"""
+
+# M5-FR-24. What the decision log promoted, which is not the same question as
+# what was trained most recently.
+PROMOTED_CHAMPION_SQL = f"""
+SELECT {_MODEL_COLUMNS}
+  FROM decide.champion_history h
+  JOIN register.model_registry m ON m.model_version = h.model_version
+ ORDER BY h.effective_from DESC, h.history_id DESC
  LIMIT 1
 """
 
+# Before the first promotion there is nothing to promote from, so recency is
+# the answer. Named as a fallback rather than left as the rule, because "most
+# recently registered" IS the wrong rule once decisions exist — it would hand
+# production to a challenger the moment it was trained.
+NEWEST_MODEL_SQL = f"""
+SELECT {_MODEL_COLUMNS}
+  FROM register.model_registry m
+ ORDER BY m.trained_at DESC, m.model_version DESC
+ LIMIT 1
+"""
+
+# Retained under its old name: sql/013 and the M3 summary both refer to it.
+CHAMPION_SQL = NEWEST_MODEL_SQL
+
 
 def champion(conn: Any) -> dict[str, Any] | None:
-    """The model currently serving.
+    """The model currently serving — the one the decision log promoted.
 
-    In M3 that is simply the most recently registered, which is a placeholder
-    and is named as one in sql/013. M5 replaces it with the promotion rule
-    fixed in PREREGISTRATION.md, decided by evidence rather than recency.
+    M3 answered this with "most recently registered", named as a placeholder in
+    sql/013 when it was written. That rule is actively wrong once M5 runs: a
+    challenger is registered the moment it is trained, and recency would hand it
+    production without it having proved anything, which is the exact failure the
+    pre-registered promotion rule exists to prevent.
+
+    The fallback to recency survives only for the state before any promotion has
+    happened, where there is genuinely nothing else to answer with.
     """
     with conn.cursor() as cur:
-        cur.execute(CHAMPION_SQL)
+        cur.execute(PROMOTED_CHAMPION_SQL)
+        promoted = cur.fetchone()
+        if promoted:
+            return promoted
+        cur.execute(NEWEST_MODEL_SQL)
         return cur.fetchone()
 
 

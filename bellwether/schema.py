@@ -54,6 +54,11 @@ SCHEMA_EXPECTATIONS = {
     "015_m3_reproducibility": (
         "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
     ),
+    "020_m5_decisions": (
+        "SELECT to_regclass('decide.model_decisions') IS NOT NULL"
+        "   AND to_regclass('decide.trigger_evaluations') IS NOT NULL"
+        "   AND to_regclass('decide.champion_history') IS NOT NULL AS present"
+    ),
     "019_m4_liftwing_comparison": (
         "SELECT to_regclass('outcome.liftwing_attempts') IS NOT NULL"
         "   AND EXISTS (SELECT 1 FROM information_schema.columns"
