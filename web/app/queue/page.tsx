@@ -26,8 +26,11 @@ type Me = {
 
 type Item = {
   revid: number;
-  score: number;
-  model_version: string;
+  // Null until this reviewer has judged the row. The API withholds them rather
+  // than the page hiding them — a value returned and not displayed is readable
+  // by anyone with the network tab open.
+  score: number | null;
+  model_version: string | null;
   event_ts: string;
   title: string;
   user_name: string | null;
@@ -226,10 +229,14 @@ export default function QueuePage() {
       {queue && (
         <div className="callout" role="note">
           <strong>{queue.immature}</strong> of {queue.items.length} items have no
-          outcome yet — an edit is only settled after{" "}
-          {queue.maturity_hours} hours. A score is what the model{" "}
-          <em>expects</em>, not what happened. Accuracy is measured on matured
-          predictions only, on the <Link href="/">status page</Link>.
+          outcome yet — an edit is only settled after {queue.maturity_hours}{" "}
+          hours. <strong>The model&rsquo;s score is hidden until you judge.</strong>{" "}
+          An opinion formed after seeing it is agreement with a number rather
+          than a judgement about the edit. Part of this list is drawn at random
+          rather than by risk, and which part is not disclosed — without it,
+          these labels would only ever describe edits the model already flagged.
+          Accuracy is measured on matured predictions only, on the{" "}
+          <Link href="/metrics">performance page</Link>.
         </div>
       )}
 
@@ -280,9 +287,15 @@ export default function QueuePage() {
             {queue.items.map((item) => (
               <tr key={item.revid}>
                 <td>
-                  <span className={item.score >= 0.5 ? "warn" : "muted"}>
-                    {item.score.toFixed(3)}
-                  </span>
+                  {item.score === null ? (
+                    <span className="note" title="Shown after you judge">
+                      hidden
+                    </span>
+                  ) : (
+                    <span className={item.score >= 0.5 ? "warn" : "muted"}>
+                      {item.score.toFixed(3)}
+                    </span>
+                  )}
                 </td>
                 <td>
                   <a

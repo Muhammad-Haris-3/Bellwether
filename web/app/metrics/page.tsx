@@ -156,7 +156,8 @@ export default function MetricsPage() {
     <main>
       <nav className="crumbs">
         <Link href="/">Status</Link> · <Link href="/timeline">Timeline</Link> ·{" "}
-        <span aria-current="page">Performance</span> · <Link href="/queue">Queue</Link>
+        <span aria-current="page">Performance</span> · <Link href="/queue">Queue</Link> ·{" "}
+        <Link href="/about">About</Link>
       </nav>
 
       <h1>Performance</h1>

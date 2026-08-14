@@ -18,6 +18,7 @@ queue links to /metrics, which computes over matured predictions only.
 
 from __future__ import annotations
 
+import random
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -99,6 +100,60 @@ SELECT p.revid,
  LIMIT %(limit)s
 """
 
+# The random slice (M7-FR-1 to FR-3).
+#
+# Drawn from the SAME eligible population as the ranked slice — same window,
+# same champion, same role — so the two differ only in how they were selected.
+# Anything else and the comparison measures the difference between two
+# populations rather than the effect of selection.
+#
+# TABLESAMPLE is deliberately not used: it samples pages, not rows, and the
+# register is written in time order, so a page sample is a time sample wearing
+# a random one's clothes.
+RANDOM_SLICE_SQL = """
+WITH serving AS (
+    SELECT COALESCE(
+        (SELECT h.model_version FROM decide.champion_history h
+          ORDER BY h.effective_from DESC, h.history_id DESC LIMIT 1),
+        (SELECT m.model_version FROM register.model_registry m
+          ORDER BY m.trained_at DESC, m.model_version DESC LIMIT 1)
+    ) AS model_version
+),
+observed AS (
+    SELECT c.revid, max(c.age_seconds) AS last_observed_age,
+           bool_or(c.had_reverted_tag) AS ever_positive
+      FROM outcome.label_checks c GROUP BY c.revid
+)
+SELECT p.revid,
+       p.score,
+       p.model_version,
+       e.event_ts,
+       e.title,
+       e.user_name,
+       e.ns,
+       (e.is_anon OR e.is_temp)                     AS is_logged_out,
+       COALESCE(e.newlen, 0) - COALESCE(e.oldlen, 0) AS byte_delta,
+       e.comment,
+       (EXTRACT(epoch FROM now() - p.event_ts) >= %(maturity)s
+        AND (o.ever_positive OR o.last_observed_age >= %(maturity)s)) AS matured,
+       o.ever_positive
+        OR EXISTS (SELECT 1 FROM outcome.labels l
+                    WHERE l.revid = p.revid AND l.label)              AS reverted,
+       hl.verdict                                   AS my_verdict,
+       hl.judged_at                                 AS my_judged_at
+  FROM register.predictions p
+  JOIN serving s ON s.model_version = p.model_version
+  JOIN landing.rc_events e ON e.revid = p.revid
+  LEFT JOIN observed o  ON o.revid = p.revid
+  LEFT JOIN app.human_labels hl
+         ON hl.revid = p.revid AND hl.user_id = app.acting_user()
+ WHERE p.role = 'champion'
+   AND p.event_ts >= now() - make_interval(hours => %(hours)s)
+   AND NOT (p.revid = ANY(%(exclude)s))
+ ORDER BY random()
+ LIMIT %(limit)s
+"""
+
 # Published beside the queue so a reader can see how far behind scoring is
 # without inferring it from timestamps.
 FRESHNESS_SQL = """
@@ -113,9 +168,10 @@ SELECT max(p.scored_at)  AS last_scored_at,
 
 INSERT_LABEL_SQL = """
 INSERT INTO app.human_labels
-    (revid, user_id, verdict, confidence, champion_version, score_shown, was_matured)
+    (revid, user_id, verdict, confidence, champion_version, score_shown, was_matured,
+     queue_slice, score_was_visible)
 VALUES (%(revid)s, %(user_id)s, %(verdict)s, %(confidence)s, %(champion)s,
-        %(score)s, %(matured)s)
+        %(score)s, %(matured)s, %(slice)s, false)
 ON CONFLICT (revid, user_id) DO NOTHING
 RETURNING label_id
 """
@@ -140,6 +196,35 @@ SELECT p.score, p.model_version,
 """
 
 
+# The proportion of the queue drawn at random rather than by rank (M7-FR-1).
+#
+# A fifth. Enough that unbiased labels accumulate at a usable rate, small enough
+# that the queue is still a triage surface rather than a survey — a reviewer
+# working a list where most items are unremarkable stops working it.
+RANDOM_SLICE_FRACTION = 0.2
+
+# Where a revision was offered, per reviewer, so the slice recorded on a label
+# is the server's own selection rather than the client's word for it (M7-FR-2).
+#
+# Process-local and short-lived, which is honest about what it is: a single
+# container, and a slice claim that cannot be recovered after a restart falls
+# back to 'ranked'. That is the conservative direction — a random-slice label
+# mistakenly recorded as ranked is dropped from the study, while the reverse
+# would contaminate the one estimate that answers BQ-8.
+_offered: dict[tuple[str, int], str] = {}
+_OFFERED_LIMIT = 20_000
+
+
+def _remember(user_id: Any, revid: int, slice_name: str) -> None:
+    if len(_offered) > _OFFERED_LIMIT:
+        _offered.clear()
+    _offered[(str(user_id), revid)] = slice_name
+
+
+def _slice_of(user_id: Any, revid: int) -> str:
+    return _offered.get((str(user_id), revid), "ranked")
+
+
 # Four times the maturity window, so a reviewer can look back far enough to see
 # how their judgements turned out. The default stays a day: triage is about what
 # just happened.
@@ -159,7 +244,26 @@ def queue(
     limit: int = 50,
     user: dict[str, Any] = ANY_SIGNED_IN,
 ) -> dict[str, Any]:
-    """Recent edits ranked by the serving champion's score."""
+    """Recent edits, mostly ranked and partly random (M7 §2).
+
+    **A fifth of the page is drawn at random rather than by rank.** A queue
+    ranked by the model, labelled by a human, fed back into the model is a
+    machine for confirming what the model already believes: the reviewer sees
+    the top of the ranking, those labels enter training, and the next model
+    receives almost no signal about the items it scored LOW — where its false
+    negatives live. The random slice is the only unbiased signal in the loop.
+
+    **The score is withheld until after the verdict** (M7 §2, and an M6
+    correction). A reviewer shown 0.92 is not forming an independent opinion
+    about the edit, they are agreeing or disagreeing with a number — and BQ-8
+    asks what a human thinks the edit was. Withholding it also makes the two
+    slices indistinguishable, which M7-FR-5 requires: a reviewer who could tell
+    a randomly drawn row would know it is probably fine, and the control would
+    stop being one.
+
+    The score is returned for rows the reviewer has ALREADY judged, so they can
+    see what the model thought once their own answer is committed.
+    """
     # The ceiling must exceed the maturity window, or no matured item can ever
     # appear and `matured` is a constant false — the marker FR-41 requires would
     # distinguish nothing, and a reviewer could never see the outcome of an edit
@@ -168,36 +272,60 @@ def queue(
     hours = max(1, min(hours, MAX_WINDOW_HOURS))
     limit = max(1, min(limit, 200))
 
+    n_random = int(limit * RANDOM_SLICE_FRACTION)
+    n_ranked = limit - n_random
+    common = {"maturity": maturity.PROVISIONAL_MATURITY_SECONDS, "hours": hours}
+
     with sessions.acting_connection(user) as conn:
-        rows = conn.execute(
-            QUEUE_SQL,
-            {"maturity": maturity.PROVISIONAL_MATURITY_SECONDS, "hours": hours, "limit": limit},
-        ).fetchall()
+        ranked = conn.execute(QUEUE_SQL, {**common, "limit": n_ranked}).fetchall()
+        random_rows = (
+            conn.execute(
+                RANDOM_SLICE_SQL,
+                {**common, "limit": n_random, "exclude": [r["revid"] for r in ranked]},
+            ).fetchall()
+            if n_random
+            else []
+        )
         freshness = conn.execute(FRESHNESS_SQL, {"hours": hours}).fetchone() or {}
 
     items = []
-    for row in rows:
-        matured = bool(row["matured"])
-        items.append(
-            {
-                "revid": row["revid"],
-                "score": round(float(row["score"]), 4),
-                "model_version": row["model_version"],
-                "event_ts": row["event_ts"],
-                "title": row["title"],
-                "user_name": row["user_name"],
-                "namespace": row["ns"],
-                "is_logged_out": row["is_logged_out"],
-                "byte_delta": row["byte_delta"],
-                "comment": row["comment"],
-                "matured": matured,
-                # Null until it is real. A false here would read as "this edit
-                # survived", which is not the same as "nobody has checked".
-                "reverted": bool(row["reverted"]) if matured else None,
-                "my_verdict": row["my_verdict"],
-                "my_judged_at": row["my_judged_at"],
-            }
-        )
+    for rows, slice_name in ((ranked, "ranked"), (random_rows, "random")):
+        for row in rows:
+            _remember(user["user_id"], row["revid"], slice_name)
+            matured_row = bool(row["matured"])
+            judged = row["my_verdict"] is not None
+            items.append(
+                {
+                    "revid": row["revid"],
+                    # Only after they have committed an answer. Returning it
+                    # unconditionally and hiding it in the page would be a
+                    # secret anyone can read with the network tab open.
+                    "score": round(float(row["score"]), 4) if judged else None,
+                    "model_version": row["model_version"] if judged else None,
+                    "event_ts": row["event_ts"],
+                    "title": row["title"],
+                    "user_name": row["user_name"],
+                    "namespace": row["ns"],
+                    "is_logged_out": row["is_logged_out"],
+                    "byte_delta": row["byte_delta"],
+                    "comment": row["comment"],
+                    "matured": matured_row,
+                    # Null until it is real. A false here would read as "this
+                    # edit survived", which is not the same as "nobody has
+                    # checked".
+                    "reverted": bool(row["reverted"]) if matured_row else None,
+                    "my_verdict": row["my_verdict"],
+                    "my_judged_at": row["my_judged_at"],
+                }
+            )
+
+    # Shuffled, so position cannot reveal rank.
+    #
+    # Sorting by score would put every randomly drawn row at the bottom, and a
+    # reviewer would learn the slice from where a row sat even without seeing
+    # the number. The batch is still mostly high-risk — triage happens at the
+    # batch level rather than row by row.
+    random.shuffle(items)
 
     return {
         "items": items,
@@ -211,11 +339,14 @@ def queue(
             "scored_in_window": freshness.get("scored_in_window", 0),
         },
         "note": (
-            "Ranked by the champion the decision log promoted. Most items are "
-            "immature: their outcome is not final and `reverted` is null, which is "
-            "what a triage queue is — a score here is what the model expects, not "
-            "what happened. No accuracy figure is computed over this list; see "
-            "/metrics, which uses matured predictions only."
+            "Most items are immature: their outcome is not final and `reverted` "
+            "is null, which is what a triage queue is. The model's score is not "
+            "shown until you have judged an edit — an opinion formed after "
+            "seeing it is agreement with a number rather than a judgement about "
+            "the edit. Part of this list is drawn at random rather than by "
+            "rank, and which part is not disclosed: without it, labels would "
+            "only ever describe edits the model already flagged. No accuracy "
+            "figure is computed over this list; see /metrics."
         ),
     }
 
@@ -263,6 +394,11 @@ def record_label(
                 "champion": shown["model_version"],
                 "score": float(shown["score"]),
                 "matured": bool(shown["matured"]),
+                # The server's own record of where it offered this row, never
+                # the client's claim. A slice a caller could assert is a slice
+                # a caller could choose, and the random slice is the only
+                # estimate in this project that answers BQ-8.
+                "slice": _slice_of(user["user_id"], judgement.revid),
             },
         ).fetchone()
 
@@ -286,7 +422,11 @@ def record_label(
         "recorded": not already,
         "already_judged": already,
         "revid": judgement.revid,
-        "score_shown": round(float(shown["score"]), 4),
+        # Returned only now, once the verdict is committed. This is the reveal:
+        # the reviewer sees what the model thought after saying what they think,
+        # which is the order that keeps the judgement independent.
+        "score": round(float(shown["score"]), 4),
+        "model_version": shown["model_version"],
         "was_matured": bool(shown["matured"]),
     }
 

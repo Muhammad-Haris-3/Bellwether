@@ -314,3 +314,47 @@ input:focus-visible {
 .decision p {
   margin: 0.3rem 0;
 }
+
+/* --- About ---------------------------------------------------------------- */
+
+/* The About page is prose for someone who has never heard of any of this, so it
+   gets a slightly larger, less dense treatment than the data pages. */
+.lead {
+  font-size: 1.05rem;
+  line-height: 1.7;
+  margin: 1.2rem 0;
+}
+
+.about-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.9rem;
+  margin: 1.2rem 0;
+}
+.about-card {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  padding: 0.9rem 1rem;
+}
+.about-card h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--accent);
+  opacity: 1;
+}
+.about-card p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+main ul {
+  color: var(--muted);
+  font-size: 0.92rem;
+  padding-left: 1.2rem;
+}
+main ul li {
+  margin: 0.35rem 0;
+}

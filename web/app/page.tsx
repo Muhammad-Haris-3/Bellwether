@@ -178,7 +178,7 @@ export default function Page() {
       <nav className="crumbs">
         <span aria-current="page">Status</span> ·{" "}
         <Link href="/timeline">Timeline</Link> · <Link href="/metrics">Performance</Link> ·{" "}
-        <Link href="/queue">Queue</Link>
+        <Link href="/queue">Queue</Link> · <Link href="/about">About</Link>
       </nav>
 
       <h1>Bellwether</h1>

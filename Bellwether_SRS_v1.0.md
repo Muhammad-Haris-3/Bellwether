@@ -536,7 +536,29 @@ count to `run_log`.
 >
 > Recorded before implementation, not after. FR-39 to FR-46 are unchanged.
 | FR-39 | The application shall implement three roles — `viewer`, `reviewer`, `admin` — enforced at the database layer via PostgreSQL row-level security, not in application code alone |
-| FR-40 | Authenticated reviewers shall see a live triage queue of recent events ranked by champion score, refreshing without a page reload |
+| FR-40 | ~~Authenticated reviewers shall see a live triage queue of recent events ranked by champion score~~ **Amended 2026-08-14, see below.** Authenticated reviewers shall see a live triage queue whose CONTENTS are selected by champion score, refreshing without a page reload. Display order within a page is not the ranking, and the model's score is withheld until a verdict is recorded |
+
+> **Amendment to FR-40 — 2026-08-14, before M7 was built.**
+>
+> M7 adds a slice of the queue drawn at random rather than by rank, because a
+> queue ranked by the model, labelled by a human, and fed back into the model
+> teaches it only about edits it already flagged. Its false negatives — the
+> errors that matter — are invisible to that loop.
+>
+> The random slice only works as a control if a reviewer cannot tell which rows
+> it contains. Sorted by score, every randomly drawn row sinks to the bottom;
+> shown with its score, it is obviously different in kind. So the page is
+> shuffled and the score is withheld until after the verdict is recorded.
+>
+> **What is lost:** the reviewer no longer works strictly highest-risk-first
+> within a page. Triage moves from the row to the batch — the page is still
+> selected by score, so it is still mostly high-risk work.
+>
+> **What is gained beyond the control:** a judgement formed without seeing the
+> model's opinion is a judgement about the edit rather than agreement with a
+> number, which is the only kind that can answer BQ-8.
+>
+> Recorded before implementation. FR-41 to FR-46 are unchanged.
 | FR-41 | The queue shall clearly distinguish **immature** items (outcome not yet final) from matured ones, and shall never present an unmatured item as evidence of accuracy |
 | FR-42 | A reviewer shall be able to mark an item, recording a human label with reviewer identity, timestamp and confidence |
 | FR-43 | All role-sensitive and state-changing actions shall append to an immutable `audit_log` |

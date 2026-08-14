@@ -132,7 +132,8 @@ export default function TimelinePage() {
     <main>
       <nav className="crumbs">
         <Link href="/">Status</Link> · <span aria-current="page">Timeline</span> ·{" "}
-        <Link href="/metrics">Performance</Link> · <Link href="/queue">Queue</Link>
+        <Link href="/metrics">Performance</Link> · <Link href="/queue">Queue</Link> ·{" "}
+        <Link href="/about">About</Link>
       </nav>
 
       <h1>Model timeline</h1>

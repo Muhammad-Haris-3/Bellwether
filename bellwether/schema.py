@@ -54,6 +54,12 @@ SCHEMA_EXPECTATIONS = {
     "015_m3_reproducibility": (
         "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
     ),
+    "027_m7_label_slices": (
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
+        "                WHERE table_schema = 'app' AND table_name = 'human_labels'"
+        "                  AND column_name = 'queue_slice')"
+        "   AND to_regclass('outcome.label_agreement') IS NOT NULL AS present"
+    ),
     "026_m6_freeze_check": (
         "SELECT EXISTS ("
         "    SELECT 1 FROM pg_proc p"

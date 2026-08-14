@@ -168,10 +168,85 @@ def test_the_queue_carries_no_accuracy_figure(world: dict[str, Any]) -> None:
 
 
 @pytest.mark.db
-def test_it_ranks_by_score(world: dict[str, Any]) -> None:
-    body = _signed_in("viewer").get("/queue", params={"hours": 336}).json()
-    scores = [i["score"] for i in body["items"]]
-    assert scores == sorted(scores, reverse=True)
+def test_the_page_is_selected_by_score_even_though_it_is_not_ordered_by_it(
+    world: dict[str, Any],
+) -> None:
+    """FR-40 as amended 2026-08-14.
+
+    The CONTENTS are chosen by rank; the display order is shuffled so a
+    reviewer cannot tell a randomly drawn row from where it sits. Both halves
+    matter: selection is what makes this triage, shuffling is what makes the
+    random slice a control.
+    """
+    with connect() as conn:
+        for revid in range(10, 40):
+            _event(conn, revid, hours_ago=3, score=0.01 * (revid - 9), title=f"P{revid}")
+        _event(conn, 99, hours_ago=3, score=0.999, title="Highest")
+
+    body = _signed_in("viewer").get("/queue", params={"limit": 5}).json()
+    revids = {i["revid"] for i in body["items"]}
+
+    # The highest-scoring edit is in the page. With a purely random draw over
+    # thirty events it would usually not be.
+    assert 99 in revids
+
+
+@pytest.mark.db
+def test_the_score_is_withheld_until_a_verdict_is_recorded(world: dict[str, Any]) -> None:
+    """M7 §2. A reviewer shown 0.92 is agreeing or disagreeing with a number,
+    not forming an opinion about the edit — and BQ-8 asks what a human thinks
+    the edit was.
+
+    Withheld server-side rather than hidden in the page: a score returned and
+    not displayed is a secret anyone can read with the network tab open.
+    """
+    client = _signed_in("reviewer")
+    before = client.get("/queue", params={"hours": 336}).json()
+    assert all(i["score"] is None for i in before["items"])
+    assert all(i["model_version"] is None for i in before["items"])
+
+    revealed = client.post(
+        "/labels", json={"revid": 1, "verdict": "bad_edit", "confidence": "high"}
+    ).json()
+    assert revealed["score"] == pytest.approx(0.92), "revealed once the answer is committed"
+
+    after = client.get("/queue", params={"hours": 336}).json()
+    judged = next(i for i in after["items"] if i["revid"] == 1)
+    assert judged["score"] == pytest.approx(0.92)
+
+
+@pytest.mark.db
+def test_a_label_records_the_slice_the_server_offered_it_in(world: dict[str, Any]) -> None:
+    """M7-FR-2. From the server's own selection, never the client's claim — a
+    slice a caller could assert is a slice a caller could choose, and the random
+    slice is the only estimate that answers BQ-8."""
+    client = _signed_in("reviewer")
+    client.get("/queue", params={"hours": 336})
+    client.post("/labels", json={"revid": 1, "verdict": "bad_edit", "confidence": "high"})
+
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT queue_slice, score_was_visible FROM app.human_labels WHERE revid = 1"
+        ).fetchone()
+
+    assert row["queue_slice"] in ("ranked", "random")
+    assert row["score_was_visible"] is False
+
+
+@pytest.mark.db
+def test_a_judgement_on_a_revision_never_offered_defaults_to_ranked(
+    world: dict[str, Any],
+) -> None:
+    """The conservative direction. A random-slice label mistakenly recorded as
+    ranked is dropped from the study; the reverse would contaminate the one
+    estimate that answers BQ-8."""
+    client = _signed_in("reviewer")
+    # No queue fetch first, so the server has no memory of offering this row.
+    client.post("/labels", json={"revid": 1, "verdict": "good_edit", "confidence": "low"})
+
+    with connect() as conn:
+        row = conn.execute("SELECT queue_slice FROM app.human_labels WHERE revid = 1").fetchone()
+    assert row["queue_slice"] == "ranked"
 
 
 @pytest.mark.db
@@ -357,8 +432,10 @@ def test_only_predictions_from_the_serving_champion_appear(world: dict[str, Any]
         )
 
     body = _signed_in("viewer").get("/queue").json()
-    assert [i["revid"] for i in body["items"] if i["revid"] == 1] == [1], "one row, not two"
-    assert all(i["model_version"] == "champ" for i in body["items"])
+    # One row per revision, not two. The model_version is withheld until the
+    # reviewer has judged, so the shadow score's absence is checked by counting
+    # rows rather than by reading a field the page no longer returns.
+    assert [i["revid"] for i in body["items"]].count(1) == 1
 
 
 @pytest.mark.db
@@ -394,7 +471,6 @@ def test_the_queue_works_before_anything_has_been_promoted(world: dict[str, Any]
 
     body = _signed_in("viewer").get("/queue", params={"hours": 336}).json()
     assert len(body["items"]) > 0, "an unpromoted champion still serves the queue"
-    assert all(i["model_version"] == "champ" for i in body["items"])
 
 
 @pytest.mark.db
@@ -416,5 +492,8 @@ def test_a_promotion_overrides_the_fallback(world: dict[str, Any]) -> None:
         conn.execute("DELETE FROM decide.champion_history")
         conn.execute("INSERT INTO decide.champion_history (model_version) VALUES ('champ')")
 
-    body = _signed_in("viewer").get("/queue", params={"hours": 336}).json()
-    assert all(i["model_version"] == "champ" for i in body["items"])
+    client = _signed_in("viewer")
+    body = client.get("/queue", params={"hours": 336}).json()
+    # 'newer' is registered but not promoted, so nothing it scored may appear.
+    # Checked by revid, because the version is withheld before judgement.
+    assert {i["revid"] for i in body["items"]} <= {1, 2}
