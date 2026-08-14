@@ -144,7 +144,8 @@ export default function QueuePage() {
             cold start, and a page with no way out of it reads as broken rather
             than as slow. */}
         <nav className="crumbs">
-          <Link href="/">Status</Link> · <span aria-current="page">Queue</span>
+          <Link href="/">Status</Link> · <Link href="/timeline">Timeline</Link> ·{" "}
+        <span aria-current="page">Queue</span>
         </nav>
         <h1>Queue</h1>
 
@@ -205,7 +206,8 @@ export default function QueuePage() {
   return (
     <main>
       <nav className="crumbs">
-        <Link href="/">Status</Link> · <span aria-current="page">Queue</span>
+        <Link href="/">Status</Link> · <Link href="/timeline">Timeline</Link> ·{" "}
+        <span aria-current="page">Queue</span>
       </nav>
 
       <h1>Triage queue</h1>

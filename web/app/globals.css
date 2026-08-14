@@ -292,3 +292,25 @@ input:focus-visible {
   white-space: nowrap;
   border: 0;
 }
+
+/* A decision is a block, not a row. Each carries five conditions with their
+   measured values, and a table row per decision would either hide that evidence
+   behind a link or squash it into a cell nobody reads. */
+.decision {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  background: var(--panel);
+  padding: 1rem 1.1rem;
+  margin: 0 0 1.25rem;
+}
+.decision-head {
+  font-size: 0.85rem;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.4rem;
+}
+.decision table {
+  margin-top: 0.6rem;
+}
+.decision p {
+  margin: 0.3rem 0;
+}
