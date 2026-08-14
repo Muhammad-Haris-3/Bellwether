@@ -327,6 +327,12 @@ def stats() -> dict[str, Any]:
             "labels": totals.get("labels", 0),
             "label_checks": totals.get("label_checks", 0),
             "revert_events": totals.get("revert_events", 0),
+            # M4 grades this cohort on a 48h window because it is the only
+            # slice the labeller checks that early. If cohort_events is far
+            # from a tenth of events, the cohort figure describes something
+            # other than what it claims to.
+            "cohort_events": totals.get("cohort_events", 0),
+            "cohort_predictions": totals.get("cohort_predictions", 0),
             "newest_event": totals.get("newest_event"),
             "oldest_event": totals.get("oldest_event"),
         },

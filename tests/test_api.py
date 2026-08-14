@@ -360,3 +360,22 @@ def test_the_register_recounts_late_scores_against_what_is_known_now(
     assert late["flagged_by_the_scorer_at_write_time"] == 0
     assert late["count"] == 1
     assert late["share"] == 0.5
+
+
+@pytest.mark.db
+def test_every_column_stats_queries_is_actually_served(client: TestClient, fresh_db: None) -> None:
+    """The bug this test exists for: cohort_events was added to STATS_SQL and
+    never to the response, so the endpoint queried it and dropped it. Nothing
+    failed — the field was simply absent, which reads exactly like a column
+    that was never asked for.
+
+    Same vacuous shape as migration 005 having no health expectation: a check
+    that does not exist cannot fail.
+    """
+    import re
+
+    from api.main import STATS_SQL
+
+    aliases = set(re.findall(r"AS\s+(\w+)", STATS_SQL))
+    served = set(client.get("/stats").json()["totals"])
+    assert aliases <= served, f"queried but never served: {sorted(aliases - served)}"
