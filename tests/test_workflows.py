@@ -26,6 +26,7 @@ SCHEDULED = {
     "triggers.yml": "31 6 * * *",
     "decide.yml": "13 8 * * *",
     "agreement.yml": "27 9 * * *",
+    "watchdog.yml": "43 * * * *",
 }
 
 

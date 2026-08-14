@@ -1,0 +1,72 @@
+name: Watchdog
+
+# Every failure this project has found was found by a test or by somebody
+# looking. Nothing told anyone when the pipeline stopped — and that gap has
+# already cost something: the API served a three-commit-old build for hours
+# while /health reported ok, because the old code was fine and answering.
+#
+# THE ALERT IS THIS RUN GOING RED. Email costs money or depends on a free tier
+# that can be withdrawn (NFR-1), so the notification is GitHub's own: a failing
+# workflow on a watched repository. That is one person receiving one email, and
+# the README says so rather than implying an on-call rota.
+#
+# Hourly. Frequent enough that a stopped pipeline is noticed the same day,
+# infrequent enough to stay far inside the free minutes.
+on:
+  schedule:
+    - cron: "43 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    name: Is anything stalled
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      BELLWETHER_DATABASE_URL: ${{ secrets.BELLWETHER_DATABASE_URL }}
+      BELLWETHER_ENV: production
+      BELLWETHER_COMMIT: ${{ github.sha }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements-pipeline.txt
+
+      # What the API says it is running, so the watchdog can compare it against
+      # this repository. A failure here is not a fault on its own — the API
+      # being unreachable is what /health is for, and a cold start can take
+      # fifty seconds.
+      - name: Ask the API what build it is serving
+        id: deployed
+        continue-on-error: true
+        run: |
+          BUILD=$(curl -s --max-time 120 \
+            https://bellwether-fyyz.onrender.com/health \
+            | python -c 'import json,sys; print(json.load(sys.stdin).get("build",""))' || true)
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+
+      - name: Check
+        run: |
+          set -o pipefail
+          python -m bellwether.watchdog \
+            ${{ steps.deployed.outputs.build && format('--deployed-build {0}', steps.deployed.outputs.build) || '' }} 2>&1 \
+            | tee watchdog-output.txt
+
+      - name: Surface the failure
+        if: failure()
+        run: |
+          DETAIL=$(tail -40 watchdog-output.txt 2>/dev/null \
+            | sed 's/%/%25/g; s/\r//g' \
+            | awk '{printf "%s%%0A", $0}')
+          echo "::error title=Bellwether is stalled::$DETAIL"
