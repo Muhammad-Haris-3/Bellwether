@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // Trailing slashes are stripped rather than forbidden.
@@ -186,6 +187,10 @@ export default function Page() {
 
   return (
     <main>
+      <nav className="crumbs">
+        <span aria-current="page">Status</span> · <Link href="/queue">Queue</Link>
+      </nav>
+
       <h1>Bellwether</h1>
       <p className="tagline">
         A model that notices it is getting worse, and replaces itself.
@@ -486,8 +491,8 @@ export default function Page() {
 
       <footer>
         <a href="https://github.com/Muhammad-Haris-3/Bellwether">Source</a> ·
-        M4 — the register is being graded. Every figure here is provisional
-        while the maturity window is a placeholder.
+        M6 — the queue is live. Every figure here is provisional while the
+        maturity window is a placeholder.
       </footer>
     </main>
   );

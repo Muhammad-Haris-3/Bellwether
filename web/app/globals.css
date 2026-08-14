@@ -170,3 +170,125 @@ footer {
   color: var(--muted);
   font-size: 0.85rem;
 }
+
+/* --- M6: the application ------------------------------------------------- */
+
+.crumbs {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-bottom: 1.5rem;
+}
+.crumbs a {
+  color: var(--accent);
+}
+
+/* FR-41 in one block. Stated before the list rather than only beside each row,
+   so a reviewer knows what a score means before reading any of them. */
+.callout {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  background: var(--panel);
+  padding: 0.85rem 1rem;
+  margin: 0 0 1.5rem;
+  font-size: 0.9rem;
+}
+.callout a {
+  color: var(--accent);
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+.controls label {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+select,
+input {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.6rem;
+  font: inherit;
+  border-radius: 4px;
+}
+
+/* "Not settled" is its own state, visually distinct from both outcomes.
+   Rendering it in the same grey as ordinary metadata would let it read as an
+   absence rather than as a fact about the edit. */
+.pending {
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.85rem;
+}
+
+.verdicts {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+button {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0.3rem 0.7rem;
+  font: inherit;
+  font-size: 0.85rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* NFR-12. Never `outline: none` — a keyboard user who cannot see where they
+   are cannot operate this at all, and the queue is meant to be worked through
+   without a mouse. */
+a:focus-visible,
+button:focus-visible,
+select:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.linkish {
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 0 0 0 0.5rem;
+  text-decoration: underline;
+}
+
+.signin {
+  display: grid;
+  gap: 0.5rem;
+  max-width: 22rem;
+}
+.signin button {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+}
+
+/* Announced to a screen reader, absent from the visual layout. Not
+   `display: none`, which removes it from the accessibility tree as well. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
