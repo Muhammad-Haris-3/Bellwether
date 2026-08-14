@@ -497,6 +497,25 @@ SELECT count(*)                                                      AS predicti
        round((max(EXTRACT(epoch FROM scored_at - event_ts)) / 60.0)::numeric, 1)
                                                                      AS lag_max_minutes
   FROM register.predictions
+ WHERE role = 'champion'
+"""
+
+# M5-FR-8. Shadow scores are reported as their own thing and never folded into
+# the figures above. A challenger exists to be compared, not to be counted:
+# adding its rows to the headline would double the prediction count and move
+# the lag distribution for a model nobody is being served.
+SHADOW_SQL = """
+SELECT p.model_version,
+       count(*)                                        AS predictions,
+       min(p.scored_at)                                AS first_score,
+       max(p.scored_at)                                AS latest_score,
+       round(EXTRACT(epoch FROM now() - m.trained_at) / 86400.0, 2) AS shadow_days
+  FROM register.predictions p
+  JOIN register.model_registry m ON m.model_version = p.model_version
+ WHERE p.role = 'shadow'
+ GROUP BY p.model_version, m.trained_at
+ ORDER BY max(p.scored_at) DESC
+ LIMIT 1
 """
 
 # The same question the scorer asked itself, asked again now.
@@ -514,10 +533,11 @@ SELECT count(*)                                                      AS predicti
 REGISTER_RECHECK_SQL = """
 SELECT count(*) AS known_before_scoring
   FROM register.predictions p
- WHERE EXISTS (SELECT 1 FROM outcome.revert_events r
+ WHERE p.role = 'champion'
+   AND (EXISTS (SELECT 1 FROM outcome.revert_events r
                 WHERE r.reverted_revid = p.revid AND r.revert_ts <= p.scored_at)
-    OR EXISTS (SELECT 1 FROM outcome.labels l
-                WHERE l.revid = p.revid AND l.first_observed_at_utc <= p.scored_at)
+        OR EXISTS (SELECT 1 FROM outcome.labels l
+                    WHERE l.revid = p.revid AND l.first_observed_at_utc <= p.scored_at))
 """
 
 # M3-FR-18 publishes a rate, so the rate is served. The most recent run only:
@@ -559,6 +579,7 @@ def register_view() -> dict[str, Any]:
     with _connect() as conn:
         totals = conn.execute(REGISTER_SQL).fetchone() or {}
         recheck = conn.execute(REGISTER_RECHECK_SQL).fetchone() or {}
+        shadow = conn.execute(SHADOW_SQL).fetchone()
         reproduction = conn.execute(REPRODUCTION_SQL).fetchone()
         champion = conn.execute(CHAMPION_SQL).fetchone()
 
@@ -631,6 +652,26 @@ def register_view() -> dict[str, Any]:
                     "them is scoring lag, and it is a measurement, not a failure. Only the "
                     "hash is stored, not the vector, so anything in unreproducible says "
                     "something differs without saying what."
+                ),
+            }
+        ),
+        # Published, and published apart. P-4 requires seven days of wall-clock
+        # shadow, so how long this has been running is the number a reader needs
+        # to know how far off a decision is.
+        "shadow": (
+            None
+            if not shadow
+            else {
+                "model_version": shadow["model_version"],
+                "predictions": shadow["predictions"],
+                "first_score": shadow["first_score"],
+                "latest_score": shadow["latest_score"],
+                "shadow_days": float(shadow["shadow_days"]),
+                "note": (
+                    "A challenger scoring alongside the champion. Never served, and "
+                    "excluded from every figure above. Promotion requires the "
+                    "pre-registered conditions in PREREGISTRATION.md section 5 — see "
+                    "/decisions."
                 ),
             }
         ),

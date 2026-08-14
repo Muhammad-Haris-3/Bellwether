@@ -138,6 +138,38 @@ def champion(conn: Any) -> dict[str, Any] | None:
         return cur.fetchone()
 
 
+ROLLED_BACK_SQL = """
+SELECT 1 FROM decide.model_decisions
+ WHERE decision = 'rollback' AND challenger_version = %(version)s
+ LIMIT 1
+"""
+
+
+def challenger(conn: Any, champion_version: str | None) -> dict[str, Any] | None:
+    """The model in shadow, or None.
+
+    Derived rather than recorded: it is the most recently trained model, unless
+    that model is already the champion. No table is needed for this, and more
+    importantly none is needed for P-4 either — shadow begins when the model was
+    trained, so `trained_at` IS the clock, and M5-FR-19's rule that a new
+    retrain resets P-3 and P-4 falls out rather than being enforced.
+
+    A model that has been rolled back is never returned. M5-FR-27: re-promoting
+    it would take the identical shadow record that promoted it the first time
+    and read it a second time, which is not new evidence. It needs a fresh
+    training run to become a candidate again.
+    """
+    with conn.cursor() as cur:
+        cur.execute(NEWEST_MODEL_SQL)
+        newest = cur.fetchone()
+        if not newest or newest["model_version"] == champion_version:
+            return None
+        cur.execute(ROLLED_BACK_SQL, {"version": newest["model_version"]})
+        if cur.fetchone():
+            return None
+    return newest
+
+
 INSERT_MODEL_SQL = """
 INSERT INTO register.model_registry
     (model_version, training_start, training_end, n_train_events, n_train_positives,

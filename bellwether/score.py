@@ -85,10 +85,21 @@ INSERT_PREDICTION_SQL = """
 INSERT INTO register.predictions
     (revid, event_ts, scored_at, model_version, role, score, feature_hash,
      outcome_observable_at_scoring, scored_by_run)
-VALUES (%(revid)s, %(event_ts)s, %(scored_at)s, %(model_version)s, 'champion',
+VALUES (%(revid)s, %(event_ts)s, %(scored_at)s, %(model_version)s, %(role)s,
         %(score)s, %(feature_hash)s, %(observable)s, %(run_id)s)
 ON CONFLICT (revid, model_version, role) DO NOTHING
 """
+
+
+def _load(model: dict[str, Any]) -> Any:
+    """Verify the digest, then unpickle. Never the other way round.
+
+    A model that has already scored cannot be un-scored, so the check happens
+    while refusing is still cheap.
+    """
+    artifact = registry.verify(model["model_version"], model["artifact_sha256"])
+    with artifact.open("rb") as fh:
+        return pickle.load(fh)  # noqa: S301 - hash-verified above
 
 
 def run(*, limit: int = 5_000, lookback_days: int = 3) -> dict[str, Any]:
@@ -107,11 +118,17 @@ def run(*, limit: int = 5_000, lookback_days: int = 3) -> dict[str, Any]:
             return {"skipped": True, "reason": "no champion"}
 
         version = champion["model_version"]
-        # Before loading, never after. A model that has already scored cannot
-        # be un-scored, so the digest is checked while refusing is still cheap.
-        artifact = registry.verify(version, champion["artifact_sha256"])
-        with artifact.open("rb") as fh:
-            model = pickle.load(fh)  # noqa: S301 - hash-verified above
+        model = _load(champion)
+
+        # M5-FR-7. The challenger scores the same events, in the same run, from
+        # the same state — one scorer with two model versions, never a second
+        # implementation. Train/serve skew took three modules to find in M3; a
+        # separate shadow scorer would be the same mistake, made on purpose.
+        with connect() as conn:
+            shadow = registry.challenger(conn, version)
+        shadow_model = _load(shadow) if shadow else None
+        if shadow:
+            print(f"score: shadowing {shadow['model_version']}")
 
         with connect() as conn, conn.cursor() as cur:
             cur.execute(
@@ -133,26 +150,57 @@ def run(*, limit: int = 5_000, lookback_days: int = 3) -> dict[str, Any]:
         with RunContext(run_id, job=JOB) as ctx, connect() as conn:
             st = state.load_for(conn, events)
             names = features.feature_names()
-            rows, late = [], 0
+            rows, late, shadow_failed = [], 0, 0
             now = utcnow()
 
             for event in events:
+                # Built ONCE and scored twice. Rebuilding it per model would be
+                # two chances to disagree about the same event, and the paired
+                # comparison the promotion rule runs on assumes they cannot.
                 vector = features.build(event, state.history_for(st, event))
-                score = float(model.predict_proba([[vector[n] for n in names]])[0][1])
+                row = [vector[n] for n in names]
+                digest = features.feature_hash(vector)
+                base = {
+                    "revid": event["revid"],
+                    "event_ts": event["event_ts"],
+                    "scored_at": now,
+                    "feature_hash": digest,
+                    "observable": event["outcome_already_observable"],
+                    "run_id": run_id,
+                }
+
                 if event["outcome_already_observable"]:
                     late += 1
                 rows.append(
                     {
-                        "revid": event["revid"],
-                        "event_ts": event["event_ts"],
-                        "scored_at": now,
+                        **base,
                         "model_version": version,
-                        "score": score,
-                        "feature_hash": features.feature_hash(vector),
-                        "observable": event["outcome_already_observable"],
-                        "run_id": run_id,
+                        "role": "champion",
+                        "score": float(model.predict_proba([row])[0][1]),
                     }
                 )
+
+                if shadow_model is not None and shadow is not None:
+                    try:
+                        shadow_score = float(shadow_model.predict_proba([row])[0][1])
+                    except Exception:  # noqa: BLE001 - any failure means "no opinion"
+                        # M5-FR-10. A challenger that errors on an event simply
+                        # has no score for it, and the pairing drops that event.
+                        # Recording a failure as a loss would let an unstable
+                        # model hide behind a mediocre metric — and would make
+                        # the champion look better the more often the
+                        # challenger broke.
+                        shadow_failed += 1
+                    else:
+                        rows.append(
+                            {
+                                **base,
+                                "model_version": shadow["model_version"],
+                                "role": "shadow",
+                                "score": shadow_score,
+                            }
+                        )
+
                 # After the score, never before.
                 state.observe(st, event)
 
@@ -167,13 +215,20 @@ def run(*, limit: int = 5_000, lookback_days: int = 3) -> dict[str, Any]:
 
     lags = [(now - e["event_ts"]).total_seconds() / 60 for e in events]
     lags.sort()
-    print(f"score: {written:,} scored with {version}")
+    # Rows written, not events scored: with a challenger in shadow there are two
+    # per event, and reporting the total as "scored with <champion>" would
+    # double the champion's apparent throughput.
+    print(f"score: {len(events):,} events, {written:,} rows, champion {version}")
     print(f"  lag minutes: median {lags[len(lags) // 2]:.1f}  max {lags[-1]:.1f}")
     if late:
         print(
             f"  {late:,} scored AFTER their outcome was already observable - "
             f"flagged, and excluded from every accuracy claim"
         )
+    if shadow:
+        print(f"  shadow {shadow['model_version']}: {len(events) - shadow_failed:,} scored")
+        if shadow_failed:
+            print(f"  {shadow_failed:,} events the challenger could not score - excluded, not lost")
 
     return {
         "scored": written,
