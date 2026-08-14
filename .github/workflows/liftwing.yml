@@ -23,6 +23,10 @@ on:
         description: "How many revisions to score this run"
         required: false
         default: "200"
+      percent:
+        description: "Sample rate, per cent of the register eligible for the benchmark"
+        required: false
+        default: "10"
 
 concurrency:
   group: liftwing
@@ -53,7 +57,7 @@ jobs:
         run: |
           set -o pipefail
           python -m bellwether.liftwing \
-            --limit "${{ inputs.limit || '200' }}" 2>&1 | tee liftwing-output.txt
+            --limit "${{ inputs.limit || '200' }}" \n            --percent "${{ inputs.percent || '10' }}" 2>&1 | tee liftwing-output.txt
 
       - name: Surface the failure
         if: failure()

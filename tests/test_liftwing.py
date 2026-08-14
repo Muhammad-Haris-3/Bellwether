@@ -153,3 +153,32 @@ def test_an_attempt_is_recorded_even_when_nothing_was_fetched(fresh_db: None) ->
             "SELECT status, fetched FROM outcome.liftwing_attempts ORDER BY attempted_at DESC"
         ).fetchone()
     assert row is not None and row["status"] == "gated" and row["fetched"] == 0
+
+
+def test_the_sample_is_deterministic_and_close_to_the_published_rate() -> None:
+    """M4-FR-25. The rate is a stated constant, not whatever a batch size
+    implied — otherwise "sampled at 10%" is a claim nobody can check."""
+    ids = range(1_300_000_000, 1_300_020_000)
+    once = [r for r in ids if liftwing.sampled(r)]
+    assert once == [r for r in ids if liftwing.sampled(r)]
+    assert 0.08 < len(once) / 20_000 < 0.12
+
+
+@pytest.mark.db
+def test_a_run_with_nothing_to_do_still_records_that_it_ran(fresh_db: None) -> None:
+    """The first production run returned early with no rows in the register old
+    enough to fetch, and wrote nothing. /metrics then showed no attempt at all,
+    which is indistinguishable from nobody having run the job — and the one
+    thing worth learning early was whether the endpoint answers.
+    """
+    result = liftwing.run(limit=10)
+    assert result["requested"] == 0
+
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT requested, fetched, status, detail FROM outcome.liftwing_attempts"
+        ).fetchone()
+    assert row is not None
+    assert row["requested"] == 0
+    assert row["status"] == "ok"
+    assert "no unscored" in (row["detail"] or "").lower()

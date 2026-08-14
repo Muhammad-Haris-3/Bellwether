@@ -9,10 +9,19 @@ eventual number worth reading.
 grades itself honestly and maintains itself unattended. A benchmark published
 only when it flatters is not a benchmark.
 
-**Sampled, never exhaustive.** One HTTP request per revision against a free,
-donation-funded service, for a comparison that a few hundred paired events
-settles as well as ten thousand would. The sample rate is published beside
-every figure it produces (M4-FR-25).
+**Sampled, never exhaustive** (M4-FR-25). A deterministic bucket on revid, at a
+rate fixed here rather than implied by whatever batch size a workflow happened
+to pass. One HTTP request per revision against a free, donation-funded service,
+for a comparison that a few hundred paired events settles as well as ten
+thousand would.
+
+**Fetched before maturity, compared after.** The first version would only fetch
+a revision once its own outcome had matured, which meant the first run had
+nothing to do and returned without recording that it had tried — so the one
+thing worth knowing early, whether this endpoint answers at all, stayed
+unknown. Scores do not need a matured label to be *collected*; only the
+comparison does. Fetching early also collects them while the revision still
+exists to be scored.
 
 **A gate is a gap, not a workaround.** DS-3's auth column reads `TBC` in the
 SRS and Wikimedia has been moving inference endpoints behind access tokens. If
@@ -29,6 +38,7 @@ from typing import Any
 
 import httpx
 
+from bellwether import frame
 from bellwether.config import get_settings
 from bellwether.db import advisory_lock, connect
 from bellwether.http import DEFAULT_TIMEOUT, RateLimiter
@@ -52,25 +62,33 @@ REQUESTS_PER_MINUTE = 30
 # workflow budget with room to spare.
 DEFAULT_BATCH = 200
 
+# The published sample rate (M4-FR-25). A fixed fraction of the register,
+# chosen deterministically so the same revisions are always eligible and the
+# sample cannot drift with batch size or scheduling.
+SAMPLE_PERCENT = 10
+_SAMPLE_SALT = "bellwether/liftwing/v1"
+
 
 class Gated(RuntimeError):
     """The service requires credentials this project does not have (M4-FR-21)."""
 
 
-# Matured predictions with no Lift Wing score yet, newest first.
+# Predictions with no Lift Wing score yet, newest first.
 #
-# Newest first, unlike everywhere else in this project: the benchmark exists to
-# describe how the two models compare NOW, and spending a limited request
-# budget on the oldest unscored events would answer that question last.
+# Newest first, unlike everywhere else in this project: the benchmark describes
+# how the two models compare NOW, and spending a limited request budget on the
+# oldest events would answer that question last.
+#
+# No maturity filter. A score does not need a matured label to be collected —
+# only the comparison does — and waiting meant the job could not even discover
+# whether the service answers.
 UNSCORED_SQL = """
 SELECT p.revid
   FROM register.predictions p
-  JOIN landing.rc_events e ON e.revid = p.revid
  WHERE p.role = 'champion'
    AND NOT EXISTS (SELECT 1 FROM outcome.liftwing_scores s WHERE s.revid = p.revid)
-   AND EXTRACT(epoch FROM now() - p.event_ts) >= %(maturity)s
  ORDER BY p.event_ts DESC
- LIMIT %(limit)s
+ LIMIT %(candidates)s
 """
 
 INSERT_SCORE_SQL = """
@@ -114,7 +132,12 @@ def score_one(client: httpx.Client, limiter: RateLimiter, revid: int) -> dict[st
     }
 
 
-def run(*, limit: int = DEFAULT_BATCH, maturity_seconds: int = 48 * 3600) -> dict[str, Any]:
+def sampled(revid: int, percent: int = SAMPLE_PERCENT) -> bool:
+    """Deterministic, so the eligible set does not shift with batch size."""
+    return frame.bucket(revid, _SAMPLE_SALT) < percent
+
+
+def run(*, limit: int = DEFAULT_BATCH, percent: int = SAMPLE_PERCENT) -> dict[str, Any]:
     run_id = new_run_id()
     settings = get_settings()
     fetched = 0
@@ -129,11 +152,30 @@ def run(*, limit: int = DEFAULT_BATCH, maturity_seconds: int = 48 * 3600) -> dic
         with connect() as conn:
             require_current(conn)
             with conn.cursor() as cur:
-                cur.execute(UNSCORED_SQL, {"maturity": maturity_seconds, "limit": limit})
-                revids = [r["revid"] for r in cur.fetchall()]
+                # Over-fetch candidates, then keep the sampled ones. Sampling in
+                # SQL would need the same blake2b bucket in Postgres, and two
+                # implementations of a sampling rule is how a frame drifts.
+                cur.execute(UNSCORED_SQL, {"candidates": limit * (100 // max(percent, 1))})
+                revids = [r["revid"] for r in cur.fetchall() if sampled(r["revid"], percent)][
+                    :limit
+                ]
 
         if not revids:
-            print("liftwing: nothing matured and unscored")
+            # Recorded, not returned silently. "There was nothing to do" and
+            # "nobody ran this" are different facts, and the first run of this
+            # job produced the second by accident.
+            with connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    INSERT_ATTEMPT_SQL,
+                    {
+                        "requested": 0,
+                        "fetched": 0,
+                        "status": "ok",
+                        "detail": "no unscored predictions in the sample",
+                        "run_id": run_id,
+                    },
+                )
+            print("liftwing: nothing unscored in the sample")
             return {"requested": 0, "fetched": 0, "status": "ok"}
 
         limiter = RateLimiter(REQUESTS_PER_MINUTE)
@@ -202,9 +244,9 @@ def run(*, limit: int = DEFAULT_BATCH, maturity_seconds: int = 48 * 3600) -> dic
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=DEFAULT_BATCH)
-    parser.add_argument("--maturity-hours", type=int, default=48)
+    parser.add_argument("--percent", type=int, default=SAMPLE_PERCENT)
     args = parser.parse_args()
-    run(limit=args.limit, maturity_seconds=args.maturity_hours * 3600)
+    run(limit=args.limit, percent=args.percent)
     return 0
 
 
