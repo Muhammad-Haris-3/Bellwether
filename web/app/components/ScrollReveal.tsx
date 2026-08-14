@@ -19,15 +19,22 @@ export function ScrollReveal({
     }
 
     const observer = new IntersectionObserver(
+      // Re-arms on exit rather than unobserving.
+      //
+      // The first version called unobserve() on the first intersection, so a
+      // section animated once per page load and never again — scroll down and
+      // back and everything was simply static. Tracking visibility both ways
+      // means the entry plays whenever a section comes back into view.
       ([entry]) => {
-        if (entry.isIntersecting) {
-          setIsVisible(true);
-          observer.unobserve(entry.target);
-        }
+        setIsVisible(entry.isIntersecting);
       },
       {
         threshold: 0.05,
-        rootMargin: "0px 0px -40px 0px",
+        // Asymmetric: a section is considered visible slightly before it
+        // reaches the bottom edge, and stays visible until well past the top.
+        // Without the generous top margin a section re-hides while it is still
+        // being read at the top of the viewport.
+        rootMargin: "-40px 0px 200% 0px",
       }
     );
 
