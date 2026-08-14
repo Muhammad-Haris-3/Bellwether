@@ -43,10 +43,21 @@ from bellwether.runlog import RunContext, new_run_id
 JOB = "metrics"
 METRICS_LOCK_KEY = 815_010
 
-# The M2 placeholder, carried here rather than re-decided. The real window needs
-# the maturity cohort to age (M2 C-1/C-2), and every row records which one it
-# used so no number is ever read without it.
-PROVISIONAL_MATURITY_SECONDS = 48 * 3600
+# Seven days, not M2's 48 hours, and the difference is not a preference.
+#
+# Two different quantities get called "maturity". M2's 48h describes when
+# reverts stop arriving — a property of the world, estimated from the survival
+# curve. This one has to be a window this pipeline has actually LOOKED at, and
+# for the 90% of events outside the maturity cohort there is exactly one check,
+# at the final checkpoint of seven days (M1 §5).
+#
+# Grading needs both, and the binding constraint is observation rather than the
+# world. Using 48h here produced a sample that was 100% positive: a positive
+# qualifies as soon as it is found, a non-cohort negative cannot be confirmed
+# until its seven-day check, and between those two points the only gradeable
+# events are the reverts. At seven days both arms become available at the same
+# moment, which is what makes the sample unbiased rather than merely larger.
+PROVISIONAL_MATURITY_SECONDS = 7 * 24 * 3600
 
 WINDOWS: dict[str, int | None] = {"7d": 7, "30d": 30, "all": None}
 
@@ -99,10 +110,20 @@ SELECT p.revid,
   JOIN observed o          ON o.revid = p.revid
   LEFT JOIN landing.editor_state s ON s.user_key = e.user_name
  WHERE p.role = 'champion'
-   -- Matured, and matured by OBSERVATION. Not "old enough": an event nobody
-   -- has looked at is not a negative, and this is the filter M4-FR-5 requires
-   -- to live in the query rather than in whoever calls it.
-   AND (o.last_observed_age >= %(maturity)s OR o.ever_positive)
+   -- Two conditions, and dropping either one biases the sample.
+   --
+   -- The first is elapsed time since the EDIT, applied to both classes alike.
+   -- Without it a positive enters the moment it is found while a negative
+   -- waits out the window, so at any instant the gradeable set is mostly
+   -- reverts — measured at 178 of 178 on the first production run.
+   --
+   -- The second is that the outcome is actually determined: observed at or
+   -- beyond the window, or already known reverted. Requiring the observation
+   -- arm alone would be worse than the bias it fixes, because the labeller
+   -- stops checking an edit once it is labelled positive, so a revert found at
+   -- one hour never reaches a later checkpoint and would be excluded forever.
+   AND EXTRACT(epoch FROM now() - p.event_ts) >= %(maturity)s
+   AND (o.ever_positive OR o.last_observed_age >= %(maturity)s)
    AND p.scored_at >= %(window_start)s
  ORDER BY p.event_ts, p.revid
 """
@@ -121,7 +142,8 @@ SELECT count(*) FILTER (WHERE NOT matured)                        AS immature,
        count(*) FILTER (WHERE matured AND scored_late AND label)  AS late_positive
   FROM (
     SELECT p.outcome_observable_at_scoring AS scored_late,
-           (o.last_observed_age >= %(maturity)s OR o.ever_positive) AS matured,
+           (EXTRACT(epoch FROM now() - p.event_ts) >= %(maturity)s
+            AND (o.ever_positive OR o.last_observed_age >= %(maturity)s)) AS matured,
            (o.ever_positive
             OR EXISTS (SELECT 1 FROM outcome.labels l
                         WHERE l.revid = p.revid AND l.label))       AS label
@@ -444,7 +466,12 @@ def _write_bins(conn: Any, metric_id: int, rows: list[dict[str, Any]]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--maturity-hours", type=int, default=48)
+    parser.add_argument(
+        "--maturity-hours",
+        type=int,
+        default=PROVISIONAL_MATURITY_SECONDS // 3600,
+        help="the window must be one the labeller actually observes at; see the module docstring",
+    )
     args = parser.parse_args()
     run(maturity_seconds=args.maturity_hours * 3600)
     return 0

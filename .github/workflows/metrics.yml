@@ -17,9 +17,9 @@ on:
   workflow_dispatch:
     inputs:
       maturity_hours:
-        description: "Maturity window in hours (48 is the M2 placeholder)"
+        description: "Maturity window in hours (168 = the 7-day final checkpoint)"
         required: false
-        default: "48"
+        default: "168"
 
 concurrency:
   group: metrics
@@ -52,7 +52,7 @@ jobs:
         run: |
           set -o pipefail
           python -m bellwether.metrics \
-            --maturity-hours "${{ inputs.maturity_hours || '48' }}" 2>&1 | tee metrics-output.txt
+            --maturity-hours "${{ inputs.maturity_hours || '168' }}" 2>&1 | tee metrics-output.txt
 
       - name: Surface the failure
         if: failure()

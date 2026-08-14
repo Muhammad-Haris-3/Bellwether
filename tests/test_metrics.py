@@ -16,7 +16,7 @@ from bellwether.db import connect
 
 
 def test_the_module_imports() -> None:
-    assert metrics.PROVISIONAL_MATURITY_SECONDS == 48 * 3600
+    assert metrics.PROVISIONAL_MATURITY_SECONDS == 7 * 24 * 3600
 
 
 def test_the_segment_list_is_the_one_the_spec_fixed() -> None:
@@ -152,7 +152,7 @@ def _checked(conn: Any, revid: int, *, age_seconds: int, reverted: bool) -> None
             (revid, checkpoint_seconds, checked_at_utc, age_seconds, had_reverted_tag)
         VALUES (%s, %s, now(), %s, %s)
         """,
-        (revid, 48 * 3600, age_seconds, reverted),
+        (revid, 7 * 24 * 3600, age_seconds, reverted),
     )
 
 
@@ -165,13 +165,13 @@ def test_an_unchecked_prediction_is_never_counted_as_a_negative(fresh_db: None) 
     checkpoint data said 38.21%.
     """
     with connect() as conn:
-        _event(conn, 1, hours_ago=72)
-        _prediction(conn, 1, score=0.8, hours_ago=72)
+        _event(conn, 1, hours_ago=240)
+        _prediction(conn, 1, score=0.8, hours_ago=240)
         # No label_checks row at all: nobody has looked.
 
-        _event(conn, 2, hours_ago=72)
-        _prediction(conn, 2, score=0.2, hours_ago=72)
-        _checked(conn, 2, age_seconds=60 * 3600, reverted=False)
+        _event(conn, 2, hours_ago=240)
+        _prediction(conn, 2, score=0.2, hours_ago=240)
+        _checked(conn, 2, age_seconds=200 * 3600, reverted=False)
 
     metrics.run()
 
@@ -194,11 +194,11 @@ def test_late_scores_are_excluded_and_their_own_base_rate_is_published(fresh_db:
     """
     with connect() as conn:
         for revid in (1, 2, 3):
-            _event(conn, revid, hours_ago=72)
-            _checked(conn, revid, age_seconds=60 * 3600, reverted=revid != 3)
-        _prediction(conn, 1, score=0.9, hours_ago=72, late=True)
-        _prediction(conn, 2, score=0.8, hours_ago=72, late=True)
-        _prediction(conn, 3, score=0.1, hours_ago=72, late=False)
+            _event(conn, revid, hours_ago=240)
+            _checked(conn, revid, age_seconds=200 * 3600, reverted=revid != 3)
+        _prediction(conn, 1, score=0.9, hours_ago=240, late=True)
+        _prediction(conn, 2, score=0.8, hours_ago=240, late=True)
+        _prediction(conn, 3, score=0.1, hours_ago=240, late=False)
 
     metrics.run()
 
@@ -220,9 +220,9 @@ def test_every_segment_is_written_every_run(fresh_db: None) -> None:
     a level holds four events — which is what n is published for."""
     with connect() as conn:
         for revid in range(1, 7):
-            _event(conn, revid, hours_ago=72, ns=0 if revid % 2 else 14)
-            _prediction(conn, revid, score=0.9 if revid <= 3 else 0.1, hours_ago=72)
-            _checked(conn, revid, age_seconds=60 * 3600, reverted=revid <= 3)
+            _event(conn, revid, hours_ago=240, ns=0 if revid % 2 else 14)
+            _prediction(conn, revid, score=0.9 if revid <= 3 else 0.1, hours_ago=240)
+            _checked(conn, revid, age_seconds=200 * 3600, reverted=revid <= 3)
 
     metrics.run()
 
@@ -243,3 +243,59 @@ def test_metrics_are_append_only_by_grant(fresh_db: None) -> None:
     held = {g["privilege_type"] for g in grants}
     assert "INSERT" in held
     assert "UPDATE" not in held and "DELETE" not in held and "TRUNCATE" not in held
+
+
+@pytest.mark.db
+def test_a_positive_does_not_enter_the_sample_before_the_window_elapses(fresh_db: None) -> None:
+    """The first production run graded 178 predictions and every one was a
+    positive.
+
+    Not a coding error — the rule said matured meant "observed for the window
+    OR already known reverted", so a revert qualified the moment it was found
+    while a negative had to wait the window out. At any instant the gradeable
+    set was therefore the reverts. Inclusion is elapsed time since the EDIT,
+    applied to both classes alike.
+    """
+    with connect() as conn:
+        # Reverted, found early, but the edit is only a day old.
+        _event(conn, 1, hours_ago=24)
+        _prediction(conn, 1, score=0.9, hours_ago=24)
+        _checked(conn, 1, age_seconds=3600, reverted=True)
+
+    metrics.run()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT n FROM outcome.prediction_metrics "
+            "WHERE window_label = 'all' AND segment = 'all'"
+        ).fetchone()
+    assert row is not None and row["n"] == 0, "a one-day-old edit cannot be graded at seven days"
+
+
+@pytest.mark.db
+def test_a_revert_found_early_is_still_graded_once_the_window_passes(fresh_db: None) -> None:
+    """The opposite failure, and the worse one.
+
+    The labeller stops checking an edit once it is labelled positive, so a
+    revert found at one hour has last_observed_age frozen at one hour forever.
+    Requiring an observation at or beyond the window — without the elapsed-time
+    arm — would exclude every early revert permanently, and the sample would
+    lose exactly the events the model exists to find.
+    """
+    with connect() as conn:
+        _event(conn, 1, hours_ago=240)
+        _prediction(conn, 1, score=0.9, hours_ago=240)
+        _checked(conn, 1, age_seconds=3600, reverted=True)  # never checked again
+
+        _event(conn, 2, hours_ago=240)
+        _prediction(conn, 2, score=0.1, hours_ago=240)
+        _checked(conn, 2, age_seconds=200 * 3600, reverted=False)
+
+    metrics.run()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT n, n_positives FROM outcome.prediction_metrics "
+            "WHERE window_label = 'all' AND segment = 'all'"
+        ).fetchone()
+    assert row is not None
+    assert row["n"] == 2, "both classes must be gradeable at the same moment"
+    assert row["n_positives"] == 1
