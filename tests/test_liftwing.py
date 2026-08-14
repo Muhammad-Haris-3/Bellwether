@@ -182,3 +182,42 @@ def test_a_run_with_nothing_to_do_still_records_that_it_ran(fresh_db: None) -> N
     assert row["requested"] == 0
     assert row["status"] == "ok"
     assert "no unscored" in (row["detail"] or "").lower()
+
+
+@respx.mock
+def test_a_transient_5xx_is_retried_rather_than_ending_the_run() -> None:
+    """The first production run fetched 55 of 200 and stopped.
+
+    A single 503 partway through was reported as the service being
+    unavailable, when it was a blip on someone else's server. Every other
+    upstream call in this project retries 5xx; this one did not.
+    """
+    route = respx.post(liftwing.ENDPOINT)
+    route.side_effect = [
+        httpx.Response(503, text="try later"),
+        httpx.Response(
+            200, json={"output": {"probabilities": {"true": 0.4}}, "model_version": "3"}
+        ),
+    ]
+    with httpx.Client() as client:
+        result = liftwing.score_one(client, _limiter(), 123)
+    assert result is not None
+    assert result["score"] == pytest.approx(0.4)
+    assert route.call_count == 2
+
+
+@respx.mock
+def test_a_persistent_5xx_gives_up_after_its_retries() -> None:
+    respx.post(liftwing.ENDPOINT).mock(return_value=httpx.Response(503, text="down"))
+    with httpx.Client() as client, pytest.raises(httpx.HTTPStatusError):
+        liftwing.score_one(client, _limiter(), 123)
+
+
+@respx.mock
+def test_a_malformed_request_is_not_retried() -> None:
+    """A 400 stays a 400 however often it is sent, and retrying only spends
+    someone else's bandwidth."""
+    route = respx.post(liftwing.ENDPOINT).mock(return_value=httpx.Response(400, text="bad"))
+    with httpx.Client() as client, pytest.raises(liftwing.UpstreamError):
+        liftwing.score_one(client, _limiter(), 123)
+    assert route.call_count == 1

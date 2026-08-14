@@ -34,14 +34,16 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from typing import Any
 
 import httpx
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from bellwether import frame
 from bellwether.config import get_settings
 from bellwether.db import advisory_lock, connect
-from bellwether.http import DEFAULT_TIMEOUT, RateLimiter
+from bellwether.http import DEFAULT_TIMEOUT, RateLimiter, UpstreamError
 from bellwether.runlog import RunContext, new_run_id
 from bellwether.schema import require_current
 
@@ -67,6 +69,13 @@ DEFAULT_BATCH = 200
 # sample cannot drift with batch size or scheduling.
 SAMPLE_PERCENT = 10
 _SAMPLE_SALT = "bellwether/liftwing/v1"
+
+# A circuit breaker, so the two failure modes stay distinguishable.
+#
+# One revision failing after its own retries is not the service being down —
+# skip it and keep the batch. This many in a row is, and continuing would spend
+# the remaining budget hammering a server that is already struggling.
+CONSECUTIVE_FAILURES_BEFORE_STOPPING = 5
 
 
 class Gated(RuntimeError):
@@ -103,6 +112,12 @@ VALUES (%(requested)s, %(fetched)s, %(status)s, %(detail)s, %(run_id)s)
 """
 
 
+@retry(
+    retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
+    wait=wait_exponential(multiplier=2, min=2, max=30),
+    stop=stop_after_attempt(3),
+    reraise=True,
+)
 def score_one(client: httpx.Client, limiter: RateLimiter, revid: int) -> dict[str, Any] | None:
     """One revision. Returns None when the service has no answer for it.
 
@@ -110,6 +125,14 @@ def score_one(client: httpx.Client, limiter: RateLimiter, revid: int) -> dict[st
     unknown to it — is not an error and not a zero. It is absent, and absent is
     what gets recorded, because a missing score imputed as 0.0 would make their
     model look wrong about an edit it never saw.
+
+    Retried on 5xx and 429, like every other upstream call in this project. The
+    first version was not, and a single 503 partway through ended the run with
+    55 of 200 fetched — a transient blip on someone else's server reported as
+    the service being unavailable.
+
+    4xx other than 429 are not retried: a request that is malformed stays
+    malformed however often it is sent.
     """
     limiter.wait()
     response = client.post(ENDPOINT, json={"rev_id": revid, "lang": "en"})
@@ -118,8 +141,16 @@ def score_one(client: httpx.Client, limiter: RateLimiter, revid: int) -> dict[st
         raise Gated(f"{response.status_code} from Lift Wing: {response.text[:200]}")
     if response.status_code == 404:
         return None
-    if response.status_code >= 400:
+    if response.status_code == 429:
+        # Their instruction beats our backoff when they gave one.
+        retry_after = response.headers.get("Retry-After")
+        if retry_after and retry_after.isdigit():
+            time.sleep(min(int(retry_after), 120))
         response.raise_for_status()
+    if response.status_code >= 500:
+        response.raise_for_status()
+    if response.status_code >= 400:
+        raise UpstreamError(f"{response.status_code} from Lift Wing: {response.text[:200]}")
 
     body = response.json()
     output = body.get("output") or {}
@@ -186,9 +217,21 @@ def run(*, limit: int = DEFAULT_BATCH, percent: int = SAMPLE_PERCENT) -> dict[st
         )
 
         with RunContext(run_id, job=JOB) as ctx, connect() as conn:
+            consecutive = 0
             try:
                 for revid in revids:
-                    result = score_one(client, limiter, revid)
+                    try:
+                        result = score_one(client, limiter, revid)
+                    except httpx.HTTPError as exc:
+                        # One revision failing after its retries is not the
+                        # service being down. Skip it and keep the rest of the
+                        # batch, which the first version threw away.
+                        consecutive += 1
+                        if consecutive >= CONSECUTIVE_FAILURES_BEFORE_STOPPING:
+                            raise
+                        detail = f"{type(exc).__name__} on {revid}"
+                        continue
+                    consecutive = 0
                     if result is None:
                         continue
                     with conn.cursor() as cur:
@@ -213,7 +256,13 @@ def run(*, limit: int = DEFAULT_BATCH, percent: int = SAMPLE_PERCENT) -> dict[st
 
             if status == "ok" and fetched < len(revids):
                 status = "partial"
-                detail = f"{len(revids) - fetched} revisions returned no score"
+                # Two causes, deliberately not merged: Lift Wing having no
+                # opinion about a revision, and a request that kept failing.
+                # The first is normal and the second is worth noticing.
+                detail = (
+                    f"{len(revids) - fetched} of {len(revids)} produced no score "
+                    f"(declined by the service, or failed after retries)"
+                )
 
             with conn.cursor() as cur:
                 cur.execute(
