@@ -506,3 +506,43 @@ def test_a_promotion_overrides_the_fallback(world: dict[str, Any]) -> None:
     # 'newer' is registered but not promoted, so nothing it scored may appear.
     # Checked by revid, because the version is withheld before judgement.
     assert {i["revid"] for i in body["items"]} <= {1, 2}
+
+
+@pytest.mark.db
+def test_judging_returns_the_score_and_the_outcome_together(world: dict[str, Any]) -> None:
+    """The reveal, and the reason it comes from the RESPONSE.
+
+    The page used to refetch the queue after a verdict. The random slice is
+    redrawn on every request, so the row just judged was often not in the next
+    response at all — the reviewer answered and their row vanished, taking the
+    score and the outcome with it.
+
+    Both now come back with the verdict, so the row can be updated in place.
+    """
+    client = _signed_in("reviewer")
+    client.get("/queue", params={"hours": 336})
+
+    body = client.post(
+        "/labels", json={"revid": 2, "verdict": "bad_edit", "confidence": "high"}
+    ).json()
+
+    assert body["score"] == pytest.approx(0.31)
+    assert body["model_version"] == "champ"
+    assert body["was_matured"] is True
+    assert body["reverted"] is True, "the settled outcome, revealed only now"
+
+
+@pytest.mark.db
+def test_an_unsettled_edit_reveals_a_score_but_no_outcome(world: dict[str, Any]) -> None:
+    """There is nothing to reveal. A false here would read as "this edit
+    survived", which is the same lie the queue refuses to tell."""
+    client = _signed_in("reviewer")
+    client.get("/queue")
+
+    body = client.post(
+        "/labels", json={"revid": 1, "verdict": "good_edit", "confidence": "low"}
+    ).json()
+
+    assert body["score"] == pytest.approx(0.92)
+    assert body["was_matured"] is False
+    assert body["reverted"] is None

@@ -358,3 +358,10 @@ main ul {
 main ul li {
   margin: 0.35rem 0;
 }
+
+/* A judged row stays in place and shows what the model thought, so the reviewer
+   can see how they did — after their own answer is committed, never before. */
+.judged {
+  color: var(--ok);
+  font-size: 0.85rem;
+}

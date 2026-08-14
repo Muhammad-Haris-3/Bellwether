@@ -187,7 +187,10 @@ WITH observed AS (
 )
 SELECT p.score, p.model_version,
        (EXTRACT(epoch FROM now() - p.event_ts) >= %(maturity)s
-        AND (o.ever_positive OR o.last_observed_age >= %(maturity)s)) AS matured
+        AND (o.ever_positive OR o.last_observed_age >= %(maturity)s)) AS matured,
+       (o.ever_positive
+        OR EXISTS (SELECT 1 FROM outcome.labels l
+                    WHERE l.revid = p.revid AND l.label))              AS reverted
   FROM register.predictions p
   LEFT JOIN observed o ON o.revid = p.revid
  WHERE p.revid = %(revid)s AND p.role = 'champion'
@@ -455,6 +458,11 @@ def record_label(
         "score": round(float(shown["score"]), 4),
         "model_version": shown["model_version"],
         "was_matured": bool(shown["matured"]),
+        # The outcome, revealed on the same terms as the score: only now, and
+        # only null when it genuinely is not settled. Returned here so the page
+        # can show the reveal without refetching the queue — a refetch redraws
+        # the random slice and the row the reviewer just judged disappears.
+        "reverted": bool(shown["reverted"]) if shown["matured"] else None,
     }
 
 

@@ -54,6 +54,16 @@ type Queue = {
   note: string;
 };
 
+// What the API hands back once a verdict is committed: the model's score, and
+// the real outcome if it is settled. Shown only now, so the judgement was made
+// without either.
+type Judged = {
+  score: number;
+  model_version: string;
+  was_matured: boolean;
+  reverted: boolean | null;
+};
+
 const VERDICTS = [
   { key: "bad_edit", label: "Bad" },
   { key: "good_edit", label: "Good" },
@@ -145,8 +155,32 @@ export default function QueuePage() {
   async function judge(revid: number, verdict: string, confidence: string) {
     setBusy(revid);
     try {
-      await apiPost("/labels", { revid, verdict, confidence });
-      await loadQueue();
+      // Update the row in place from the response rather than refetching.
+      //
+      // Refetching threw away the reveal: the random slice is redrawn on every
+      // request, so the row just judged was often not in the next response at
+      // all — the reviewer answered and their row vanished, taking the score
+      // and the outcome with it.
+      const revealed = await apiPost<Judged>("/labels", { revid, verdict, confidence });
+      setQueue((current) =>
+        current
+          ? {
+              ...current,
+              items: current.items.map((item) =>
+                item.revid === revid
+                  ? {
+                      ...item,
+                      my_verdict: verdict,
+                      score: revealed.score,
+                      model_version: revealed.model_version,
+                      reverted: revealed.reverted,
+                      matured: revealed.was_matured,
+                    }
+                  : item,
+              ),
+            }
+          : current,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "could not record that");
     } finally {
@@ -358,7 +392,9 @@ export default function QueuePage() {
                 </td>
                 <td>
                   {item.my_verdict ? (
-                    <span className="muted">{item.my_verdict.replace("_", " ")}</span>
+                    <span className="judged">
+                      you said <strong>{item.my_verdict.replace("_", " ")}</strong>
+                    </span>
                   ) : me.role === "viewer" ? (
                     <span className="note">read only</span>
                   ) : (
