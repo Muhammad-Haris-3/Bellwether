@@ -45,8 +45,21 @@ CSRF = Depends(sessions.check_csrf)
 # say which is being served (M6-FR-13).
 QUEUE_SQL = """
 WITH serving AS (
-    SELECT model_version FROM decide.champion_history
-     ORDER BY effective_from DESC, history_id DESC LIMIT 1
+    -- The same rule as registry.champion(), and it has to be: this is a second
+    -- implementation of "which model is serving", and the first version left
+    -- out the half that matters today.
+    --
+    -- Nothing has been promoted yet, so decide.champion_history is empty and
+    -- the champion is the newest registered model by fallback. Reading only the
+    -- history matched nothing, and the queue showed zero items over a register
+    -- holding forty-five thousand predictions — no error, just an empty list
+    -- and a sentence saying the scorer had not run.
+    SELECT COALESCE(
+        (SELECT h.model_version FROM decide.champion_history h
+          ORDER BY h.effective_from DESC, h.history_id DESC LIMIT 1),
+        (SELECT m.model_version FROM register.model_registry m
+          ORDER BY m.trained_at DESC, m.model_version DESC LIMIT 1)
+    ) AS model_version
 ),
 observed AS (
     SELECT c.revid, max(c.age_seconds) AS last_observed_age,

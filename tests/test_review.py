@@ -313,3 +313,44 @@ def test_the_window_can_reach_past_the_maturity_horizon(world: dict[str, Any]) -
     body = _signed_in("viewer").get("/queue", params={"hours": 10_000}).json()
     assert body["window_hours"] == review.MAX_WINDOW_HOURS
     assert body["matured"] >= 1, "a queue that can never show a matured item is not one"
+
+
+@pytest.mark.db
+def test_the_queue_works_before_anything_has_been_promoted(world: dict[str, Any]) -> None:
+    """The state production was actually in, and the queue could not serve it.
+
+    decide.champion_history is empty until the first promotion. registry.champion()
+    falls back to the newest registered model; the queue re-implemented that
+    resolution in SQL and left the fallback out, so its `serving` CTE matched
+    nothing and it returned zero items over a register holding forty-five
+    thousand predictions — no error, just an empty list.
+    """
+    with connect() as conn:
+        conn.execute("DELETE FROM decide.champion_history")
+
+    body = _signed_in("viewer").get("/queue", params={"hours": 336}).json()
+    assert len(body["items"]) > 0, "an unpromoted champion still serves the queue"
+    assert all(i["model_version"] == "champ" for i in body["items"])
+
+
+@pytest.mark.db
+def test_a_promotion_overrides_the_fallback(world: dict[str, Any]) -> None:
+    """And the fallback must not win once a decision exists — otherwise a
+    rollback would be ignored by the one page a reviewer actually reads."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO register.model_registry "
+            "(model_version, trained_at, training_start, training_end, n_train_events, "
+            " n_train_positives, feature_names, hyperparameters, offline_metrics, "
+            " artifact_path, artifact_sha256) "
+            "VALUES ('newer', now(), now() - interval '20 days', now() - interval '19 days', "
+            "        100, 10, ARRAY['a'], '{}'::jsonb, '{}'::jsonb, 'models/y.pkl', %s)",
+            ("b" * 64,),
+        )
+        # 'champ' is older but is what the log promoted. The queue must follow
+        # the decision, not the training date.
+        conn.execute("DELETE FROM decide.champion_history")
+        conn.execute("INSERT INTO decide.champion_history (model_version) VALUES ('champ')")
+
+    body = _signed_in("viewer").get("/queue", params={"hours": 336}).json()
+    assert all(i["model_version"] == "champ" for i in body["items"])
