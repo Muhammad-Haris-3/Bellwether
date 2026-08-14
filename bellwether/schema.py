@@ -19,6 +19,29 @@ class SchemaBehind(RuntimeError):
     """The code needs a migration this database has not had applied."""
 
 
+def _column(schema: str, table: str, column: str) -> str:
+    """Does this column exist — regardless of who is asking.
+
+    NOT information_schema.columns, which only lists columns the querying role
+    holds a privilege on. The health endpoint runs as bellwether_readonly, which
+    has no privileges on anything in `app`, so an information_schema probe there
+    returns false on a database where the column exists and the migration
+    applied cleanly. That is exactly what it did for 027: the bootstrap reported
+    OK for all twenty-eight files and /health reported one of them missing.
+
+    pg_catalog is world-readable, so this answers the question actually being
+    asked — whether the migration ran — rather than whether the caller can see
+    its result.
+    """
+    return (
+        "EXISTS (SELECT 1 FROM pg_attribute a"
+        "          JOIN pg_class c     ON c.oid = a.attrelid"
+        "          JOIN pg_namespace n ON n.oid = c.relnamespace"
+        f"        WHERE n.nspname = '{schema}' AND c.relname = '{table}'"
+        f"          AND a.attname = '{column}' AND NOT a.attisdropped)"
+    )
+
+
 # What each migration is expected to have left behind.
 #
 # The pipeline deploys on every push; the schema is applied by hand through
@@ -55,17 +78,15 @@ SCHEMA_EXPECTATIONS = {
         "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
     ),
     "028_m7_human_label_training": (
-        "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
-        "                WHERE table_schema = 'register' AND table_name = 'model_registry'"
-        "                  AND column_name = 'human_labels')"
-        "   AND EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace"
+        "SELECT "
+        + _column("register", "model_registry", "human_labels")
+        + "   AND EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace"
         "                WHERE n.nspname = 'app' AND p.proname = 'labels_for_training') AS present"
     ),
     "027_m7_label_slices": (
-        "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
-        "                WHERE table_schema = 'app' AND table_name = 'human_labels'"
-        "                  AND column_name = 'queue_slice')"
-        "   AND to_regclass('outcome.label_agreement') IS NOT NULL AS present"
+        "SELECT "
+        + _column("app", "human_labels", "queue_slice")
+        + "   AND to_regclass('outcome.label_agreement') IS NOT NULL AS present"
     ),
     "026_m6_freeze_check": (
         "SELECT EXISTS ("

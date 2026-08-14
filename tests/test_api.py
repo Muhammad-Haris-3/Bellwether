@@ -406,3 +406,44 @@ def test_one_unreadable_probe_does_not_blank_the_whole_health_map(
     assert body["schema"]["999_unreadable"] is False
     assert body["schema"]["001_schema"] is True, "a later probe must not inherit the failure"
     assert body["schema_behind"] == ["999_unreadable"]
+
+
+@pytest.mark.db
+def test_every_health_probe_answers_as_the_serving_role(fresh_db: None) -> None:
+    """The failure that made this test necessary.
+
+    The bootstrap reported OK for all twenty-eight migrations and /health
+    reported one of them missing. The migration had applied; the PROBE was
+    wrong. `information_schema.columns` only lists columns the querying role
+    holds a privilege on, and the health endpoint runs as bellwether_readonly,
+    which has no privileges on anything in the `app` schema.
+
+    So the check answered "can the serving role see this" when the question is
+    "did the migration run" — and it answered false about a database that was
+    completely up to date.
+
+    Every other probe happened to target a schema the serving role can read,
+    which is a coincidence rather than a design. This runs the whole set AS
+    that role, so the next probe written against a privilege-filtered view
+    fails here rather than in production.
+    """
+    import psycopg
+
+    from bellwether.db import connect
+    from bellwether.schema import SCHEMA_EXPECTATIONS
+
+    wrong: dict[str, str] = {}
+    with connect() as conn:
+        for name, sql in SCHEMA_EXPECTATIONS.items():
+            with conn.cursor() as cur:
+                try:
+                    cur.execute("SET LOCAL ROLE bellwether_readonly")
+                    row = cur.execute(sql).fetchone()
+                    if not (row and row["present"]):
+                        wrong[name] = "returned false on a fully migrated database"
+                except psycopg.Error as exc:
+                    wrong[name] = f"{type(exc).__name__}: {str(exc)[:80]}"
+                finally:
+                    conn.rollback()
+
+    assert not wrong, f"probes that cannot answer as the serving role: {wrong}"
