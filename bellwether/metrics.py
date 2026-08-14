@@ -39,6 +39,7 @@ from bellwether.config import get_settings
 from bellwether.db import advisory_lock, connect
 from bellwether.evaluate import BOOTSTRAP_RESAMPLES, SEED
 from bellwether.runlog import RunContext, new_run_id
+from bellwether.schema import require_current
 
 JOB = "metrics"
 METRICS_LOCK_KEY = 815_010
@@ -373,6 +374,10 @@ def run(*, maturity: dict[str, int] | None = None) -> dict[str, Any]:
             return {"skipped": True}
 
         with RunContext(run_id, job=JOB, window_to=now) as ctx, connect() as conn:
+            # Before any work, so a database behind the code says so rather than
+            # failing on a column name several queries in.
+            require_current(conn)
+
             for population, maturity_seconds in (maturity or POPULATIONS).items():
                 cohort_only = population == "maturity_cohort"
                 for label, days in WINDOWS.items():

@@ -153,7 +153,7 @@ def test_every_migration_has_a_health_expectation() -> None:
     the mechanism built to detect exactly this class of drift. A missing
     expectation must break the build, not read as health.
     """
-    from api.main import SCHEMA_EXPECTATIONS
+    from bellwether.schema import SCHEMA_EXPECTATIONS
 
     migrations = {p.stem for p in (REPO / "sql").glob("*.sql")}
     missing = migrations - SCHEMA_EXPECTATIONS.keys()

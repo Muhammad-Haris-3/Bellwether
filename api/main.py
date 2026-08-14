@@ -25,6 +25,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from bellwether.config import get_settings
+from bellwether.schema import SCHEMA_EXPECTATIONS
 
 app = FastAPI(
     title="Bellwether API",
@@ -58,6 +59,15 @@ SELECT
     -- the check that the frame has not silently blinded the secondary label
     -- path — the failure it was introduced to prevent.
     (SELECT count(*) FROM outcome.revert_events)                            AS revert_events,
+    -- The maturity cohort is a deterministic 10% bucket of the frame, and M4
+    -- grades it on a 48h window because it is the only slice the labeller
+    -- checks that early. Published so the split is verifiable from outside:
+    -- if this is far from a tenth of events, the cohort figure is describing
+    -- something other than what it claims to.
+    (SELECT count(*) FROM landing.rc_events WHERE in_maturity_cohort)       AS cohort_events,
+    (SELECT count(*) FROM register.predictions p
+       JOIN landing.rc_events e ON e.revid = p.revid
+      WHERE e.in_maturity_cohort AND p.role = 'champion')                   AS cohort_predictions,
     (SELECT max(event_ts) FROM landing.rc_events)                           AS newest_event,
     (SELECT min(event_ts) FROM landing.rc_events)                           AS oldest_event
 """
@@ -140,93 +150,6 @@ SELECT sampling_stratum,
  GROUP BY sampling_stratum
  ORDER BY sampling_stratum
 """
-
-
-# What each migration is expected to have left behind.
-#
-# The pipeline deploys on every push; the schema is applied by hand through
-# bootstrap_database.py. So code can be ahead of the database, and the symptom
-# is a column that does not exist — reported by a failing job, in a log, some
-# time later. This makes the question "which migration does this database
-# actually have" answerable from outside, in one request.
-SCHEMA_EXPECTATIONS = {
-    "001_schema": (
-        "SELECT to_regclass('landing.rc_events') IS NOT NULL"
-        "   AND to_regclass('outcome.labels') IS NOT NULL AS present"
-    ),
-    "002_roles": (
-        "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bellwether_writer')"
-        "   AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bellwether_readonly')"
-        "    AS present"
-    ),
-    "003_m1_frame": (
-        "SELECT to_regclass('landing.tag_names') IS NOT NULL"
-        "   AND EXISTS (SELECT 1 FROM information_schema.columns"
-        "                WHERE table_schema = 'landing' AND table_name = 'rc_events'"
-        "                  AND column_name = 'tag_ids')"
-        "   AND EXISTS (SELECT 1 FROM information_schema.columns"
-        "                WHERE table_schema = 'landing' AND table_name = 'rc_events'"
-        "                  AND column_name = 'in_maturity_cohort') AS present"
-    ),
-    "004_m1_gaps": ("SELECT to_regclass('landing.gap_attempts') IS NOT NULL AS present"),
-    "006_m1_revert_events": ("SELECT to_regclass('outcome.revert_events') IS NOT NULL AS present"),
-    "008_m2_evaluations": ("SELECT to_regclass('outcome.evaluations') IS NOT NULL AS present"),
-    "014_m3_applied_reverts": (
-        "SELECT to_regclass('landing.state_applied_reverts') IS NOT NULL AS present"
-    ),
-    "015_m3_reproducibility": (
-        "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
-    ),
-    "018_m4_population": (
-        "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
-        "                WHERE table_schema = 'outcome'"
-        "                  AND table_name = 'prediction_metrics'"
-        "                  AND column_name = 'population') AS present"
-    ),
-    "017_m4_metrics": (
-        "SELECT to_regclass('outcome.prediction_metrics') IS NOT NULL"
-        "   AND to_regclass('outcome.calibration_bins') IS NOT NULL"
-        "   AND to_regclass('outcome.liftwing_scores') IS NOT NULL AS present"
-    ),
-    "016_m3_reproduction_scope": (
-        "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
-        "                WHERE table_schema = 'register' AND table_name = 'reproductions'"
-        "                  AND column_name = 'state_predates_window') AS present"
-    ),
-    "013_m3_model_registry": (
-        "SELECT to_regclass('register.model_registry') IS NOT NULL AS present"
-    ),
-    "012_m3_pipeline_state": (
-        "SELECT to_regclass('landing.pipeline_state') IS NOT NULL AS present"
-    ),
-    "011_m3_register": ("SELECT to_regclass('register.predictions') IS NOT NULL AS present"),
-    "010_m2_importance": (
-        "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
-        "                WHERE table_schema = 'outcome' AND table_name = 'evaluations'"
-        "                  AND column_name = 'feature_importance') AS present"
-    ),
-    "009_m2_null_check": (
-        "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
-        "                WHERE table_schema = 'outcome' AND table_name = 'evaluations'"
-        "                  AND column_name = 'null_pr_auc') AS present"
-    ),
-    "007_m2_state": (
-        "SELECT to_regclass('landing.editor_state') IS NOT NULL"
-        "   AND to_regclass('landing.page_state') IS NOT NULL"
-        "   AND EXISTS (SELECT 1 FROM information_schema.columns"
-        "                WHERE table_schema = 'outcome' AND table_name = 'revert_events'"
-        "                  AND column_name = 'revert_user_id') AS present"
-    ),
-    "005_m1_retention": (
-        "SELECT to_regclass('outcome.seals') IS NOT NULL"
-        "   AND EXISTS (SELECT 1 FROM pg_proc p"
-        "                 JOIN pg_namespace n ON n.oid = p.pronamespace"
-        "                WHERE n.nspname = 'landing' AND p.proname = 'prune_expired')"
-        "   AND EXISTS (SELECT 1 FROM information_schema.columns"
-        "                WHERE table_schema = 'outcome' AND table_name = 'label_checks'"
-        "                  AND column_name = 'in_maturity_cohort') AS present"
-    ),
-}
 
 
 # The inputs to the maturity window (M2).

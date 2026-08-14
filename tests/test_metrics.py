@@ -347,3 +347,26 @@ def test_the_two_populations_are_never_collapsed(fresh_db: None) -> None:
     with connect() as conn:
         rows = conn.execute("SELECT DISTINCT population FROM outcome.prediction_metrics").fetchall()
     assert {r["population"] for r in rows} == {"all", "maturity_cohort"}
+
+
+@pytest.mark.db
+def test_a_database_behind_the_code_says_so_instead_of_crashing(
+    fresh_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Metrics run #2 failed with a traceback naming a column, which says
+    nothing about what to do next.
+
+    The pipeline deploys on every push while the schema is applied by hand, so
+    a job can run against a database that predates it. api/main.py had noted
+    exactly this failure mode and guarded only itself.
+    """
+    from bellwether import schema
+
+    monkeypatch.setitem(
+        schema.SCHEMA_EXPECTATIONS,
+        "999_not_applied",
+        "SELECT to_regclass('outcome.nothing_here') IS NOT NULL AS present",
+    )
+
+    with pytest.raises(schema.SchemaBehind, match="999_not_applied"):
+        metrics.run()
