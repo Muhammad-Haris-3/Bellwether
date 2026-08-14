@@ -76,6 +76,7 @@ export default function QueuePage() {
   const [waited, setWaited] = useState(0);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [hours, setHours] = useState(24);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -128,6 +129,18 @@ export default function QueuePage() {
       if (timer.current) clearInterval(timer.current);
     };
   }, [me?.authenticated, loadQueue]);
+
+  // Polling pauses while the tab is hidden, so a reviewer coming back from a
+  // diff can be looking at a list a few minutes old. This asks for the current
+  // one on demand rather than making them wait for the next tick.
+  async function refreshNow() {
+    setRefreshing(true);
+    try {
+      await loadQueue();
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   async function judge(revid: number, verdict: string, confidence: string) {
     setBusy(revid);
@@ -262,9 +275,12 @@ export default function QueuePage() {
           <option value={336}>last 14 days</option>
           <option value={720}>last 30 days</option>
         </select>
-        <span className="note">
+        <button onClick={() => void refreshNow()} disabled={refreshing}>
+          {refreshing ? "Refreshing…" : "Refresh"}
+        </button>
+        <span className="note" aria-live="polite">
           refreshed {lastRefresh ? ago(lastRefresh.toISOString()) : "…"} · polls
-          every {POLL_SECONDS}s
+          every {POLL_SECONDS}s while this tab is open
         </span>
       </div>
 
