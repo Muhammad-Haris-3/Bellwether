@@ -54,6 +54,13 @@ SCHEMA_EXPECTATIONS = {
     "015_m3_reproducibility": (
         "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
     ),
+    "022_m6_app": (
+        "SELECT to_regclass('app.users') IS NOT NULL"
+        "   AND to_regclass('app.sessions') IS NOT NULL"
+        "   AND to_regclass('app.human_labels') IS NOT NULL"
+        "   AND to_regclass('app.audit_log') IS NOT NULL"
+        "   AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bellwether_app') AS present"
+    ),
     "021_m5_segment_bands": (
         "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
         "                WHERE table_schema = 'register'"

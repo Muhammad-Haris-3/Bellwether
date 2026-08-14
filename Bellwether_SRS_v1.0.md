@@ -514,7 +514,27 @@ count to `run_log`.
 
 | # | Requirement |
 |---|---|
-| FR-38 | The web application shall provide email-based authentication with sessions stored server-side |
+| FR-38 | ~~The web application shall provide email-based authentication with sessions stored server-side~~ **Amended 2026-08-14, see below.** The application shall provide credential-based authentication with sessions stored server-side. Accounts are created by an administrator; there is no self-service sign-up and no email is sent |
+
+> **Amendment to FR-38 — 2026-08-14, before M6 was built.**
+>
+> Email-based sign-in requires something that sends email. A transactional
+> provider or Gmail SMTP would work, and both put the project's zero-cost
+> guarantee (NFR-1) at the mercy of a free tier that can be withdrawn or
+> throttled, plus an API key in a deployment environment.
+>
+> The requirement is therefore narrowed rather than dropped: accounts are
+> issued by an administrator, with a strong generated password shown once — the
+> same pattern `scripts/bootstrap_database.py` already uses for database roles.
+> Sessions remain server-side, which was the part of FR-38 that carried the
+> security property.
+>
+> **What is lost:** no self-service sign-up, no password reset by email, and no
+> way for a stranger to obtain an account. For a system with a handful of
+> reviewers that is acceptable; for a real deployment it would not be, and this
+> note is here so nobody has to reconstruct why.
+>
+> Recorded before implementation, not after. FR-39 to FR-46 are unchanged.
 | FR-39 | The application shall implement three roles — `viewer`, `reviewer`, `admin` — enforced at the database layer via PostgreSQL row-level security, not in application code alone |
 | FR-40 | Authenticated reviewers shall see a live triage queue of recent events ranked by champion score, refreshing without a page reload |
 | FR-41 | The queue shall clearly distinguish **immature** items (outcome not yet final) from matured ones, and shall never present an unmatured item as evidence of accuracy |

@@ -68,9 +68,22 @@ a catch, and NFR-1 forbids paying:
 | Magic link via Gmail SMTP | Free | App passwords, deliverability, and a personal mailbox in the loop |
 | Invite-only, admin-issued credentials | Free | Not email-based sign-in; a deviation from SRS FR-38 that must be recorded |
 
-**This is a decision to be made before building, not during.** §12 lists it as
-the one open question that blocks work, because the wrong answer costs money
-and the third answer changes a requirement the SRS states.
+**Decided 2026-08-14, before implementation: option three.** Accounts are issued
+by an administrator with a strong generated password shown once — the same
+pattern `scripts/bootstrap_database.py` already uses for database roles. No
+email is sent, so NFR-1 is kept without depending on a free tier that can be
+withdrawn.
+
+SRS FR-38 is amended to match, with the reasoning and the cost recorded there.
+What is given up: self-service sign-up, password reset by email, and any route
+to an account for someone the administrator has not met. For a handful of
+reviewers that is acceptable; for a real deployment it would not be.
+
+| # | Requirement |
+|---|---|
+| M6-FR-38 | Passwords shall be hashed with a memory-hard KDF from the standard library — `hashlib.scrypt` — so the serving image gains no dependency |
+| M6-FR-39 | A generated password shall be displayed once at creation and never recoverable afterwards |
+| M6-FR-40 | Account creation shall itself be an audited admin action |
 
 ---
 
