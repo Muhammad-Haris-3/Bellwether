@@ -49,6 +49,24 @@ h2 {
   font-weight: 600;
 }
 
+/* Subordinate to h2, not a second h2. The Lift Wing comparison belongs under
+   "How good is it?" rather than beside it — it qualifies that answer, and a
+   heading at the same level would read as a separate verdict. */
+h3 {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  margin: 1.8rem 0 0.6rem;
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.86em;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));

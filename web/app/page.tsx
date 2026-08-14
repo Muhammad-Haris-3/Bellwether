@@ -56,6 +56,59 @@ type Stats = {
   runs: Run[];
 };
 
+// The offline backtest. A rehearsal: a backfilled census, labels harvested at
+// leisure, folds trained on data adjacent to what they score.
+type Kc2 = {
+  decided: boolean;
+  clears_kc2: boolean;
+  provisional: boolean;
+  margin: number;
+  margin_required: number;
+  n_events: number;
+  maturity_hours: number;
+  pr_auc: { model: number; logged_out: number };
+};
+
+type MetricRow = {
+  n: number;
+  n_positives: number;
+  pr_auc: number | null;
+  pr_auc_ci: [number | null, number | null];
+  margin: number | null;
+  liftwing: {
+    n: number;
+    liftwing_pr_auc: number | null;
+    model_pr_auc_on_paired: number | null;
+    margin: number | null;
+  };
+};
+
+type Window = {
+  maturity_hours: number;
+  provisional: boolean;
+  excluded: { immature: number; late: number; late_base_rate: number | null };
+  aggregate: MetricRow | null;
+};
+
+// The performance. Forecasts committed to an append-only register before the
+// answer existed, on live data, under a scoring lag.
+type Metrics = {
+  computed: boolean;
+  populations?: Record<
+    string,
+    { maturity_hours: number; windows: Record<string, Window> }
+  >;
+  liftwing_last_attempt: {
+    status: string;
+    requested: number;
+    fetched: number;
+  } | null;
+};
+
+function pct(value: number | null | undefined, digits = 4) {
+  return value === null || value === undefined ? "—" : value.toFixed(digits);
+}
+
 function statusClass(status: string) {
   if (status === "success") return "ok";
   if (status === "partial" || status === "running") return "warn";
@@ -73,6 +126,8 @@ function freshness(job: string, minutesAgo: number | null) {
 
 export default function Page() {
   const [stats, setStats] = useState<Stats | null>(null);
+  const [kc2, setKc2] = useState<Kc2 | null>(null);
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [waited, setWaited] = useState(0);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -85,6 +140,17 @@ export default function Page() {
       const response = await fetch(`${API}/stats`, { cache: "no-store" });
       if (!response.ok) throw new Error(`API returned ${response.status}`);
       setStats((await response.json()) as Stats);
+
+      // The performance figures load separately and are allowed to fail on
+      // their own. A page that goes blank because one endpoint is unhappy
+      // reports the whole system as down, which is a worse lie than a missing
+      // section.
+      const [k, m] = await Promise.allSettled([
+        fetch(`${API}/kc2`, { cache: "no-store" }).then((r) => r.json()),
+        fetch(`${API}/metrics`, { cache: "no-store" }).then((r) => r.json()),
+      ]);
+      if (k.status === "fulfilled") setKc2(k.value as Kc2);
+      if (m.status === "fulfilled") setMetrics(m.value as Metrics);
     } catch (err) {
       setError(err instanceof Error ? err.message : "unreachable");
     } finally {
@@ -248,6 +314,138 @@ export default function Page() {
             only one would mean choosing which.
           </p>
 
+          {/*
+            M4-FR-24. Two PR-AUC figures exist and they measure DIFFERENT
+            POPULATIONS. Showing them without that distinction is how a project
+            ends up quoting whichever is higher, so they are labelled, put in
+            separate columns, and the note under them says it in words rather
+            than leaving it to be inferred from a heading.
+          */}
+          <h2>How good is it?</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Measurement</th>
+                <th>PR-AUC</th>
+                <th>vs logged-out</th>
+                <th>Sample</th>
+                <th>Matured at</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  Backtest <span className="muted">(offline, backfilled)</span>
+                </td>
+                <td>{kc2 ? pct(kc2.pr_auc.model) : "—"}</td>
+                <td>{kc2 ? `+${pct(kc2.margin)}` : "—"}</td>
+                <td>{kc2 ? kc2.n_events.toLocaleString() : "—"}</td>
+                <td className="muted">
+                  {kc2 ? `${kc2.maturity_hours}h` : "—"}
+                  {kc2?.provisional && " · provisional"}
+                </td>
+              </tr>
+              {["all", "maturity_cohort"].map((population) => {
+                const block = metrics?.populations?.[population];
+                const window = block?.windows?.["all"];
+                const agg = window?.aggregate;
+                return (
+                  <tr key={population}>
+                    <td>
+                      Live{" "}
+                      <span className="muted">
+                        {population === "all"
+                          ? "(register, all events)"
+                          : "(register, maturity cohort)"}
+                      </span>
+                    </td>
+                    <td>
+                      {agg?.pr_auc == null ? (
+                        <span className="muted">not yet</span>
+                      ) : (
+                        <>
+                          {pct(agg.pr_auc)}{" "}
+                          <span className="muted">
+                            [{pct(agg.pr_auc_ci[0])}, {pct(agg.pr_auc_ci[1])}]
+                          </span>
+                        </>
+                      )}
+                    </td>
+                    <td>{agg?.margin == null ? "—" : pct(agg.margin)}</td>
+                    <td>
+                      {agg ? agg.n.toLocaleString() : "—"}
+                      {agg && agg.n > 0 && (
+                        <span className="muted"> · {agg.n_positives} pos</span>
+                      )}
+                    </td>
+                    <td className="muted">
+                      {block ? `${block.maturity_hours}h` : "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p className="note">
+            These are not the same measurement and the higher one is not the
+            answer. The backtest scores a backfilled census whose labels were
+            harvested at leisure, with folds trained on data adjacent to what
+            they score. The live rows grade forecasts written to an append-only
+            register <em>before the outcome existed</em>, on a different
+            population, under a scoring lag. Where they disagree, the live one
+            is true.
+          </p>
+          <p className="note">
+            The two live rows are also not interchangeable. The maturity cohort
+            is the tenth of events the labeller checks densely enough to grade
+            at 48 hours; everything else waits for its seven-day check. The
+            cohort figure arrives first over far fewer events.
+          </p>
+          {metrics?.populations?.all?.windows?.["all"] && (
+            <p className="note">
+              Excluded from the live figures:{" "}
+              {metrics.populations.all.windows["all"].excluded.immature.toLocaleString()}{" "}
+              not yet matured, and{" "}
+              {metrics.populations.all.windows["all"].excluded.late.toLocaleString()}{" "}
+              scored after their own outcome was already visible. The second
+              exclusion is correct and is not neutral — those edits were
+              reverted fast, so dropping them removes real positives, which is
+              why their own base rate is published beside the count.
+            </p>
+          )}
+
+          <h3>Against Wikimedia&rsquo;s own model</h3>
+          {(() => {
+            const paired =
+              metrics?.populations?.all?.windows?.["all"]?.aggregate?.liftwing;
+            const attempt = metrics?.liftwing_last_attempt;
+            if (paired?.margin != null) {
+              return (
+                <p>
+                  Bellwether {pct(paired.model_pr_auc_on_paired)} against Lift
+                  Wing {pct(paired.liftwing_pr_auc)} on {paired.n} events both
+                  models scored — a margin of {pct(paired.margin)}.
+                </p>
+              );
+            }
+            return (
+              <p className="muted">
+                No comparison yet
+                {paired ? ` — ${paired.n} paired events so far` : ""}.
+                {attempt &&
+                  ` Last fetch: ${attempt.fetched} of ${attempt.requested} (${attempt.status}).`}
+              </p>
+            );
+          })()}
+          <p className="note">
+            Wikimedia runs <code>revertrisk-language-agnostic</code> in
+            production against the same edits. The SRS recorded, before any
+            model here existed, that it is expected to win — and the comparison
+            is published whichever way it falls. It is paired on the events both
+            models scored, which is why the Bellwether figure quoted here is not
+            the one in the table above.
+          </p>
+
           <h2>Pipeline</h2>
           <table>
             <thead>
@@ -288,7 +486,8 @@ export default function Page() {
 
       <footer>
         <a href="https://github.com/Muhammad-Haris-3/Bellwether">Source</a> ·
-        M0 — no model exists yet, by design.
+        M4 — the register is being graded. Every figure here is provisional
+        while the maturity window is a placeholder.
       </footer>
     </main>
   );
