@@ -177,6 +177,12 @@ SCHEMA_EXPECTATIONS = {
     "015_m3_reproducibility": (
         "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
     ),
+    "018_m4_population": (
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
+        "                WHERE table_schema = 'outcome'"
+        "                  AND table_name = 'prediction_metrics'"
+        "                  AND column_name = 'population') AS present"
+    ),
     "017_m4_metrics": (
         "SELECT to_regclass('outcome.prediction_metrics') IS NOT NULL"
         "   AND to_regclass('outcome.calibration_bins') IS NOT NULL"
@@ -722,7 +728,7 @@ WITH latest AS (SELECT max(computed_at) AS at FROM outcome.prediction_metrics)
 SELECT m.*
   FROM outcome.prediction_metrics m, latest
  WHERE m.computed_at = latest.at
- ORDER BY m.window_label, m.segment, m.segment_level
+ ORDER BY m.population, m.window_label, m.segment, m.segment_level
 """
 
 CALIBRATION_SQL = """
@@ -733,6 +739,7 @@ SELECT b.bin_index, b.bin_low, b.bin_high, b.n, b.mean_predicted,
   JOIN outcome.prediction_metrics m ON m.metric_id = b.metric_id
  WHERE m.computed_at = (SELECT max(computed_at) FROM outcome.prediction_metrics)
    AND m.window_label = %(window)s
+   AND m.population = %(population)s
    AND m.segment = 'all'
  ORDER BY b.bin_index
 """
@@ -780,8 +787,11 @@ def metrics_view() -> dict[str, Any]:
             ),
         }
 
-    windows: dict[str, Any] = {}
+    populations: dict[str, Any] = {}
     for row in rows:
+        windows = populations.setdefault(
+            row["population"], {"maturity_hours": row["maturity_hours"], "windows": {}}
+        )["windows"]
         bucket = windows.setdefault(
             row["window_label"],
             {
@@ -810,19 +820,25 @@ def metrics_view() -> dict[str, Any]:
         "computed": True,
         "computed_at": rows[0]["computed_at"],
         "code_commit": rows[0]["code_commit"],
-        "windows": windows,
+        "populations": populations,
         "note": (
             "Live figures on register predictions. Distinct from /kc2, which is an "
             "offline backtest over a backfilled census — the two measure different "
             "populations and neither replaces the other. Segments are diagnosis and "
-            "are never a headline result (M4-FR-14). Provisional while the maturity "
-            "window is a 48h placeholder; see /maturity."
+            "are never a headline result (M4-FR-14). "
+            "TWO populations are published and they are not interchangeable: 'all' is "
+            "every scored event matured at seven days, because outside the maturity "
+            "cohort the labeller checks exactly once and does so at the seven-day "
+            "checkpoint; 'maturity_cohort' is the 10% receiving the full grid, matured "
+            "at 48 hours, arriving five days sooner over a tenth as many events. The "
+            "cohort is a deterministic bucket of the sampling frame, so it is smaller "
+            "rather than skewed. Neither is a substitute for the other."
         ),
     }
 
 
 @app.get("/calibration")
-def calibration_view(window: str = "7d") -> dict[str, Any]:
+def calibration_view(window: str = "7d", population: str = "all") -> dict[str, Any]:
     """Whether a score of 0.9 means what it says (M4-FR-23).
 
     Both rates are served. The frame keeps 50% of logged-out edits and 3% of
@@ -832,14 +848,22 @@ def calibration_view(window: str = "7d") -> dict[str, Any]:
     roughly that factor.
     """
     with _connect() as conn:
-        rows = conn.execute(CALIBRATION_SQL, {"window": window}).fetchall()
+        rows = conn.execute(
+            CALIBRATION_SQL, {"window": window, "population": population}
+        ).fetchall()
 
     if not rows:
-        return {"computed": False, "window": window, "note": "No calibration curve yet."}
+        return {
+            "computed": False,
+            "window": window,
+            "population": population,
+            "note": "No calibration curve yet.",
+        }
 
     return {
         "computed": True,
         "window": window,
+        "population": population,
         "computed_at": rows[0]["computed_at"],
         "maturity_hours": rows[0]["maturity_hours"],
         "provisional": rows[0]["provisional"],

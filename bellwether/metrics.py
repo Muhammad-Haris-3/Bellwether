@@ -59,6 +59,22 @@ METRICS_LOCK_KEY = 815_010
 # moment, which is what makes the sample unbiased rather than merely larger.
 PROVISIONAL_MATURITY_SECONDS = 7 * 24 * 3600
 
+# The maturity cohort is the 10% that receives the FULL checkpoint grid (M1 §5),
+# so a 48h check exists for every one of them and both arms of the inclusion
+# rule become available at 48 hours rather than seven days.
+#
+# It is a deterministic 10% bucket of the sampling frame, which makes it a
+# probability sample of the frame: smaller, not skewed. The figure arrives five
+# days sooner and describes a tenth as many events, and it is published under
+# its own population label rather than blended into the headline — a reader who
+# could not tell the two apart would take the early number for the real one.
+COHORT_MATURITY_SECONDS = 48 * 3600
+
+POPULATIONS: dict[str, int] = {
+    "all": PROVISIONAL_MATURITY_SECONDS,
+    "maturity_cohort": COHORT_MATURITY_SECONDS,
+}
+
 WINDOWS: dict[str, int | None] = {"7d": 7, "30d": 30, "all": None}
 
 CALIBRATION_BINS = 10
@@ -110,6 +126,7 @@ SELECT p.revid,
   JOIN observed o          ON o.revid = p.revid
   LEFT JOIN landing.editor_state s ON s.user_key = e.user_name
  WHERE p.role = 'champion'
+   AND (NOT %(cohort_only)s OR e.in_maturity_cohort)
    -- Two conditions, and dropping either one biases the sample.
    --
    -- The first is elapsed time since the EDIT, applied to both classes alike.
@@ -148,19 +165,21 @@ SELECT count(*) FILTER (WHERE NOT matured)                        AS immature,
             OR EXISTS (SELECT 1 FROM outcome.labels l
                         WHERE l.revid = p.revid AND l.label))       AS label
       FROM register.predictions p
+      JOIN landing.rc_events e ON e.revid = p.revid
       LEFT JOIN observed o ON o.revid = p.revid
      WHERE p.role = 'champion' AND p.scored_at >= %(window_start)s
+       AND (NOT %(cohort_only)s OR e.in_maturity_cohort)
   ) AS scoped
 """
 
 INSERT_METRIC_SQL = """
 INSERT INTO outcome.prediction_metrics
-    (window_label, window_start, window_end, segment, segment_level, maturity_hours,
+    (population, window_label, window_start, window_end, segment, segment_level, maturity_hours,
      provisional, n, n_positives, base_rate, weighted_base_rate, pr_auc,
      pr_auc_ci_low, pr_auc_ci_high, roc_auc, brier, baseline_pr_auc, margin,
      margin_ci_low, margin_ci_high, excluded_immature, excluded_late,
      excluded_late_base_rate, code_commit, run_id)
-VALUES (%(window_label)s, %(window_start)s, %(window_end)s, %(segment)s,
+VALUES (%(population)s, %(window_label)s, %(window_start)s, %(window_end)s, %(segment)s,
         %(segment_level)s, %(maturity_hours)s, %(provisional)s, %(n)s,
         %(n_positives)s, %(base_rate)s, %(weighted_base_rate)s, %(pr_auc)s,
         %(pr_auc_ci_low)s, %(pr_auc_ci_high)s, %(roc_auc)s, %(brier)s,
@@ -341,7 +360,7 @@ def calibration(
     return out
 
 
-def run(*, maturity_seconds: int = PROVISIONAL_MATURITY_SECONDS) -> dict[str, Any]:
+def run(*, maturity: dict[str, int] | None = None) -> dict[str, Any]:
     run_id = new_run_id()
     settings = get_settings()
     now = datetime.now(UTC)
@@ -354,72 +373,85 @@ def run(*, maturity_seconds: int = PROVISIONAL_MATURITY_SECONDS) -> dict[str, An
             return {"skipped": True}
 
         with RunContext(run_id, job=JOB, window_to=now) as ctx, connect() as conn:
-            for label, days in WINDOWS.items():
-                start = now - timedelta(days=days) if days else datetime(2000, 1, 1, tzinfo=UTC)
+            for population, maturity_seconds in (maturity or POPULATIONS).items():
+                cohort_only = population == "maturity_cohort"
+                for label, days in WINDOWS.items():
+                    start = now - timedelta(days=days) if days else datetime(2000, 1, 1, tzinfo=UTC)
 
-                with conn.cursor() as cur:
-                    cur.execute(MATURED_SQL, {"maturity": maturity_seconds, "window_start": start})
-                    matured = cur.fetchall()
-                    cur.execute(
-                        EXCLUSIONS_SQL, {"maturity": maturity_seconds, "window_start": start}
+                    with conn.cursor() as cur:
+                        scope = {
+                            "maturity": maturity_seconds,
+                            "window_start": start,
+                            "cohort_only": cohort_only,
+                        }
+                        cur.execute(MATURED_SQL, scope)
+                        matured = cur.fetchall()
+                        cur.execute(EXCLUSIONS_SQL, scope)
+                        excl = cur.fetchone() or {}
+
+                    # M3-FR-10. Correct, and not neutral — see the module docstring.
+                    usable = [r for r in matured if not r["scored_late"]]
+                    late = int(excl.get("late") or 0)
+                    late_positive = int(excl.get("late_positive") or 0)
+
+                    common = {
+                        "population": population,
+                        "window_label": label,
+                        "window_start": start if days else None,
+                        "window_end": now,
+                        "maturity_hours": maturity_seconds // 3600,
+                        "provisional": True,
+                        "excluded_immature": int(excl.get("immature") or 0),
+                        "excluded_late": late,
+                        "excluded_late_base_rate": (late_positive / late) if late else None,
+                        "commit": settings.build_id,
+                        "run_id": run_id,
+                    }
+
+                    metric_id = _write(
+                        conn,
+                        {**common, "segment": "all", "segment_level": "all"},
+                        usable,
+                        aggregate=True,
                     )
-                    excl = cur.fetchone() or {}
+                    written += 1
+                    if label == "7d":
+                        summary[population] = {
+                            "n": len(usable),
+                            "positives": sum(1 for r in usable if r["label"]),
+                            "excluded_late": late,
+                        }
 
-                # M3-FR-10. Correct, and not neutral — see the module docstring.
-                usable = [r for r in matured if not r["scored_late"]]
-                late = int(excl.get("late") or 0)
-                late_positive = int(excl.get("late_positive") or 0)
+                    # The aggregate carries the calibration curve; segments do not,
+                    # because a reliability bin split four ways holds nothing.
+                    if metric_id is not None:
+                        _write_bins(conn, metric_id, usable)
 
-                common = {
-                    "window_label": label,
-                    "window_start": start if days else None,
-                    "window_end": now,
-                    "maturity_hours": maturity_seconds // 3600,
-                    "provisional": True,
-                    "excluded_immature": int(excl.get("immature") or 0),
-                    "excluded_late": late,
-                    "excluded_late_base_rate": (late_positive / late) if late else None,
-                    "commit": settings.build_id,
-                    "run_id": run_id,
-                }
+                    for segment, column in SEGMENTS.items():
+                        for level in sorted({str(r[column]) for r in usable}):
+                            subset = [r for r in usable if str(r[column]) == level]
+                            _write(
+                                conn,
+                                {**common, "segment": segment, "segment_level": level},
+                                subset,
+                            )
+                            written += 1
 
-                metric_id = _write(
-                    conn,
-                    {**common, "segment": "all", "segment_level": "all"},
-                    usable,
-                    aggregate=True,
-                )
-                written += 1
-                if label == "7d":
-                    summary = {**compute(usable), "excluded_late": late}
+                ctx.rows_written = written
 
-                # The aggregate carries the calibration curve; segments do not,
-                # because a reliability bin split four ways holds nothing.
-                if metric_id is not None:
-                    _write_bins(conn, metric_id, usable)
-
-                for segment, column in SEGMENTS.items():
-                    for level in sorted({str(r[column]) for r in usable}):
-                        subset = [r for r in usable if str(r[column]) == level]
-                        _write(
-                            conn,
-                            {**common, "segment": segment, "segment_level": level},
-                            subset,
-                        )
-                        written += 1
-
-            ctx.rows_written = written
-
-    print(f"metrics: wrote {written} rows over {len(WINDOWS)} windows")
-    if summary.get("n"):
-        print(
-            f"  7d  n={summary['n']:,}  positives={summary['n_positives']:,}  "
-            f"PR-AUC {summary.get('pr_auc')}  "
-            f"CI [{summary.get('pr_auc_ci_low')}, {summary.get('pr_auc_ci_high')}]"
-        )
-        print(f"      margin vs logged-out {summary.get('margin')}")
-    else:
-        print("  7d  nothing matured yet — the register is younger than the maturity window")
+    print(f"metrics: wrote {written} rows")
+    for population, seen in summary.items():
+        hours = (maturity or POPULATIONS)[population] // 3600
+        if seen["n"]:
+            print(
+                f"  7d {population:<16} n={seen['n']:,}  positives={seen['positives']:,}  "
+                f"(matured at {hours}h)"
+            )
+        else:
+            print(
+                f"  7d {population:<16} nothing gradeable yet — no scored event is "
+                f"{hours}h old with its outcome determined"
+            )
     return {"rows": written, "seven_day": summary}
 
 
@@ -472,8 +504,19 @@ def main() -> int:
         default=PROVISIONAL_MATURITY_SECONDS // 3600,
         help="the window must be one the labeller actually observes at; see the module docstring",
     )
+    parser.add_argument(
+        "--cohort-maturity-hours",
+        type=int,
+        default=COHORT_MATURITY_SECONDS // 3600,
+        help="the cohort receives the full checkpoint grid, so a shorter window is observable",
+    )
     args = parser.parse_args()
-    run(maturity_seconds=args.maturity_hours * 3600)
+    run(
+        maturity={
+            "all": args.maturity_hours * 3600,
+            "maturity_cohort": args.cohort_maturity_hours * 3600,
+        }
+    )
     return 0
 
 

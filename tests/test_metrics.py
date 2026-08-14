@@ -299,3 +299,51 @@ def test_a_revert_found_early_is_still_graded_once_the_window_passes(fresh_db: N
     assert row is not None
     assert row["n"] == 2, "both classes must be gradeable at the same moment"
     assert row["n_positives"] == 1
+
+
+@pytest.mark.db
+def test_the_cohort_is_graded_at_48h_while_the_rest_waits_for_seven_days(fresh_db: None) -> None:
+    """The whole reason the cohort variant exists.
+
+    Outside the maturity cohort the labeller checks exactly once, at the
+    seven-day final checkpoint, so nothing else can be graded before then. The
+    cohort receives the full grid, so both arms of the inclusion rule are
+    available at 48 hours — five days sooner, over a tenth as many events.
+    """
+    with connect() as conn:
+        # In the cohort, three days old, checked at 48h: gradeable at 48h only.
+        _event(conn, 1, hours_ago=72)
+        conn.execute("UPDATE landing.rc_events SET in_maturity_cohort = true WHERE revid = 1")
+        _prediction(conn, 1, score=0.9, hours_ago=72)
+        _checked(conn, 1, age_seconds=50 * 3600, reverted=True)
+
+        # Outside it, same age, same check. Gradeable under neither window,
+        # because seven days have not passed.
+        _event(conn, 2, hours_ago=72)
+        _prediction(conn, 2, score=0.1, hours_ago=72)
+        _checked(conn, 2, age_seconds=50 * 3600, reverted=False)
+
+    metrics.run()
+
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT population, n, maturity_hours FROM outcome.prediction_metrics "
+            "WHERE window_label = 'all' AND segment = 'all' ORDER BY population"
+        ).fetchall()
+
+    by_population = {r["population"]: r for r in rows}
+    assert by_population["all"]["n"] == 0
+    assert by_population["all"]["maturity_hours"] == 168
+    assert by_population["maturity_cohort"]["n"] == 1
+    assert by_population["maturity_cohort"]["maturity_hours"] == 48
+
+
+@pytest.mark.db
+def test_the_two_populations_are_never_collapsed(fresh_db: None) -> None:
+    """M4-FR-14 in spirit. The cohort figure arrives first and describes a
+    tenth as many events; a reader who could not tell them apart would take the
+    early number for the real one."""
+    metrics.run()
+    with connect() as conn:
+        rows = conn.execute("SELECT DISTINCT population FROM outcome.prediction_metrics").fetchall()
+    assert {r["population"] for r in rows} == {"all", "maturity_cohort"}

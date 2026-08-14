@@ -20,6 +20,10 @@ on:
         description: "Maturity window in hours (168 = the 7-day final checkpoint)"
         required: false
         default: "168"
+      cohort_maturity_hours:
+        description: "Maturity for the 10% cohort, which gets the full grid (48 = M2's window)"
+        required: false
+        default: "48"
 
 concurrency:
   group: metrics
@@ -52,7 +56,7 @@ jobs:
         run: |
           set -o pipefail
           python -m bellwether.metrics \
-            --maturity-hours "${{ inputs.maturity_hours || '168' }}" 2>&1 | tee metrics-output.txt
+            --maturity-hours "${{ inputs.maturity_hours || '168' }}"             --cohort-maturity-hours "${{ inputs.cohort_maturity_hours || '48' }}" 2>&1             | tee metrics-output.txt
 
       - name: Surface the failure
         if: failure()
