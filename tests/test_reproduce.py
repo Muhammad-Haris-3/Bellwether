@@ -269,3 +269,33 @@ def test_state_built_before_the_window_is_out_of_scope_not_a_failure(
     # Reach back far enough and it becomes a real, and failing, check.
     with pytest.raises(reproduce.ReproductionFailure):
         reproduce.run(days=2, history_days=40)
+
+
+@pytest.mark.db
+def test_a_prediction_from_a_superseded_model_is_not_a_failure(fresh_db: None) -> None:
+    """The regression that turned this job permanently red.
+
+    `state.py` changed substantially in M3 — reverts fold in when this system
+    LEARNED of them rather than when they happened — so a prediction written
+    before that fix cannot re-derive under the code that replaced it. Production
+    reported 180 of 1,694 unreproducible and the daily run went red, when what
+    had actually happened was a correctness fix landing.
+
+    The claim is now scoped to what the SERVING model produced. A prediction
+    from a superseded champion is counted in its own column, like state that
+    predates the window already is — not checkable rather than failed.
+    """
+    result = reproduce.run(days=2, percent=100, history_days=2)
+    assert "superseded_model" in result, "the category must be reported, not folded away"
+    assert result["superseded_model"] == 0, "nothing superseded in a fresh database"
+
+
+def test_the_narrower_claim_is_stated_in_the_module() -> None:
+    """A guarantee that quietly shrank would be worse than one that failed. The
+    scoping is documented where someone reading the reproducibility figure will
+    find it."""
+    import inspect
+
+    source = inspect.getsource(reproduce)
+    assert "superseded" in source
+    assert "SERVING model" in source

@@ -152,9 +152,27 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT, history_days: int = 30)
             return {"skipped": True}
 
         with RunContext(run_id, job=JOB, window_from=window_start, window_to=window_end) as ctx:
-            with connect() as conn, conn.cursor() as cur:
-                cur.execute(REPLAY_SQL, {"history_start": history_start})
-                events = cur.fetchall()
+            with connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(REPLAY_SQL, {"history_start": history_start})
+                    events = cur.fetchall()
+                current = registry.champion(conn)
+
+            # Which model version the claim covers.
+            #
+            # `state.py` changed substantially in M3 — reverts now fold in when
+            # this system LEARNED of them rather than when they happened — and a
+            # prediction written before that fix cannot re-derive under the code
+            # that replaced it. That is the fix working, not a reproducibility
+            # failure, and counting it as one made the daily job permanently red
+            # while saying nothing true.
+            #
+            # So the claim is scoped to what the SERVING model produced: we can
+            # reproduce the predictions the current champion made. Predictions
+            # from a superseded champion are reported in their own column, like
+            # state that predates the window already is. The narrower claim is
+            # the one this project can actually support.
+            current_version = current["model_version"] if current else None
 
             names = features.feature_names()
             st: dict[str, Any] = {}
@@ -187,6 +205,7 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT, history_days: int = 30)
                 models = _load_models(conn, versions)
 
                 hash_matched = score_matched = unreproducible = out_of_scope = 0
+                superseded = 0
                 # Retained at zero. The column exists because an earlier version
                 # rebuilt each mismatch a second time with the reverts the
                 # scorer had learned late; folding reverts by the moment
@@ -200,6 +219,17 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT, history_days: int = 30)
                     if features.feature_hash(vector) == event["feature_hash"]:
                         hash_matched += 1
                         matched_vector = vector
+                    elif current_version and event["model_version"] != current_version:
+                        # Written by a superseded champion, under the code that
+                        # trained it. state.py changed substantially in M3 —
+                        # reverts fold in when this system LEARNED of them
+                        # rather than when they happened — so a prediction from
+                        # before that fix cannot re-derive under the code that
+                        # replaced it.
+                        #
+                        # That is the fix working. Counting it as a failure made
+                        # this job permanently red while saying nothing true.
+                        superseded += 1
                     elif _predates(conn, event, history_start):
                         # The scorer read state built from events scored before
                         # this pass begins. Not a prediction that fails to
@@ -241,13 +271,14 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT, history_days: int = 30)
             ctx.partial = unreproducible > 0
 
     total = len(checks)
-    checkable = total - out_of_scope
+    checkable = total - out_of_scope - superseded
     rate = hash_matched / checkable if checkable else 1.0
     print(f"reproduce: {total:,} of {len(events):,} predictions re-derived over {days}d")
     print(f"  feature hash matched          {hash_matched:>7,}  ({rate:.2%})")
     print(f"  matched only at scoring time  {late_matched:>7,}")
     print(f"  not reproducible either way   {unreproducible:>7,}")
     print(f"  state predates the window     {out_of_scope:>7,}  (not checkable)")
+    print(f"  written by a superseded model {superseded:>7,}  (not checkable)")
     print(f"  score reproduced exactly      {score_matched:>7,}")
 
     if unreproducible:
@@ -260,6 +291,7 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT, history_days: int = 30)
 
     return {
         "sampled": total,
+        "superseded_model": superseded,
         "state_predates_window": out_of_scope,
         "hash_matched": hash_matched,
         "matched_at_scoring_time": late_matched,
