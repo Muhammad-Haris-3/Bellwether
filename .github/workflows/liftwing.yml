@@ -57,7 +57,8 @@ jobs:
         run: |
           set -o pipefail
           python -m bellwether.liftwing \
-            --limit "${{ inputs.limit || '200' }}" \n            --percent "${{ inputs.percent || '10' }}" 2>&1 | tee liftwing-output.txt
+            --limit "${{ inputs.limit || '200' }}" \
+            --percent "${{ inputs.percent || '10' }}" 2>&1 | tee liftwing-output.txt
 
       - name: Surface the failure
         if: failure()

@@ -155,3 +155,23 @@ def test_the_scorer_runs_straight_after_ingestion() -> None:
     ingest = next(i for i, n in enumerate(steps) if n == "Ingest recent changes")
     scoring = next(i for i, n in enumerate(steps) if n == "Score newly ingested edits")
     assert ingest < scoring
+
+
+@pytest.mark.parametrize("name", sorted(p.name for p in WORKFLOWS.glob("*.yml")))
+def test_no_run_block_contains_a_literal_backslash_n(name: str) -> None:
+    r"""A mangled line continuation, twice shipped.
+
+    Editing these files through a shell heredoc turned `\` + newline into the
+    two characters `\n`. Bash reads that as an escaped letter, so
+    `--limit "200" \n --percent "10"` passes a bare `n` as an argument and the
+    job dies on `unrecognized arguments: n`.
+
+    Nothing legitimate in these workflows contains a backslash-n; the failure
+    handlers use `\r` and `%%0A`. So the sequence is a reliable signature of the
+    mistake rather than a proxy for it.
+    """
+    doc = _load(name)
+    for job in doc["jobs"].values():
+        for step in job["steps"]:
+            run = step.get("run", "")
+            assert r"\n" not in run, f"{name}: mangled continuation in {step.get('name', 'a step')}"
