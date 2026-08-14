@@ -23,6 +23,7 @@ SCHEDULED = {
     "reproduce.yml": "19 5 * * *",
     "metrics.yml": "7 */6 * * *",
     "liftwing.yml": "41 7 * * *",
+    "triggers.yml": "31 6 * * *",
 }
 
 

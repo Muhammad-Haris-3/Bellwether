@@ -1,0 +1,90 @@
+name: Triggers
+
+# Daily, and this is the one that can act on its own.
+#
+# Evaluates the three pre-registered retrain conditions (PREREGISTRATION.md §8)
+# and, if one has held for three consecutive days, retrains automatically. The
+# retrained model enters SHADOW — never production, whatever its offline metrics
+# say. Promotion is a separate decision under a separate rule.
+#
+# Daily rather than more often, because the conditions are stated in daily
+# windows and evaluating twice a day would let a condition reach three
+# consecutive windows in a day and a half.
+#
+# Every evaluation is recorded, including the ones that fire nothing. A trigger
+# that silently stopped being evaluated looks exactly like one that keeps not
+# firing.
+on:
+  schedule:
+    - cron: "31 6 * * *"
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "Window day, YYYY-MM-DD (blank = today)"
+        required: false
+      no_retrain:
+        description: "Evaluate and record only; do not act on a firing"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: triggers
+  cancel-in-progress: false
+
+jobs:
+  triggers:
+    name: Evaluate the retrain conditions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      # A fired trigger retrains, and a trained artifact is committed so a
+      # promotion stays verifiable from git alone by someone with no database
+      # access.
+      contents: write
+
+    env:
+      BELLWETHER_DATABASE_URL: ${{ secrets.BELLWETHER_DATABASE_URL }}
+      BELLWETHER_ENV: production
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements-pipeline.txt -r requirements-scoring.txt
+
+      - name: Evaluate
+        run: |
+          set -o pipefail
+          python -m bellwether.triggers \
+            ${{ inputs.day && format('--day {0}', inputs.day) || '' }} \
+            ${{ inputs.no_retrain == true && '--no-retrain' || '' }} 2>&1 \
+            | tee triggers-output.txt
+
+      - name: Commit any artifact a firing produced
+        if: always()
+        run: |
+          if [ -z "$(git status --porcelain models/)" ]; then
+            echo "no new model to commit"
+            exit 0
+          fi
+          CARD=$(ls -t models/*.json | head -1)
+          git config user.name  "bellwether-bot"
+          git config user.email "noreply@github.com"
+          git add models/
+          git commit -m "Register $(basename "$CARD" .json) (automatic retrain)"
+          git push
+
+      - name: Surface the failure
+        if: failure()
+        run: |
+          DETAIL=$(tail -40 triggers-output.txt 2>/dev/null \
+            | sed 's/%/%25/g; s/\r//g' \
+            | awk '{printf "%s%%0A", $0}')
+          echo "::error title=triggers failed::$DETAIL"
