@@ -337,7 +337,14 @@ def run(*, dry_run: bool = False) -> dict[str, Any]:
                         **verdict,
                     },
                 )
-                decision_id = cur.fetchone()["decision_id"]
+                # A RETURNING insert that yields nothing is not a case to
+                # shrug at: it would mean the decision was not recorded while
+                # the promotion below went ahead, leaving production serving a
+                # model with no row saying why.
+                inserted = cur.fetchone()
+                if inserted is None:
+                    raise RuntimeError("the decision was not recorded; refusing to act on it")
+                decision_id = inserted["decision_id"]
 
                 if decision == "promote":
                     cur.execute(
@@ -499,7 +506,10 @@ def check_rollback(*, day: Any = None) -> dict[str, Any]:
                         "run_id": run_id,
                     },
                 )
-                decision_id = cur.fetchone()["decision_id"]
+                inserted = cur.fetchone()
+                if inserted is None:
+                    raise RuntimeError("the rollback was not recorded; refusing to act on it")
+                decision_id = inserted["decision_id"]
                 cur.execute(
                     INSERT_CHAMPION_SQL,
                     {

@@ -395,9 +395,11 @@ def run(*, window_day: date | None = None, retrain: bool = True) -> dict[str, An
         # resets the count, because three rows spanning a week is not three
         # consecutive windows and would let a trigger fire on evidence that was
         # never continuous.
-        contiguous = bool(previous and previous["window_day"] == day - timedelta(days=1))
-        decay_streak = (previous["decay_streak"] if contiguous else 0) + 1 if decay else 0
-        drift_streak = (previous["drift_streak"] if contiguous else 0) + 1 if drift else 0
+        carried = (
+            previous if previous and previous["window_day"] == day - timedelta(days=1) else None
+        )
+        decay_streak = ((carried["decay_streak"] if carried else 0) + 1) if decay else 0
+        drift_streak = ((carried["drift_streak"] if carried else 0) + 1) if drift else 0
 
         reasons = []
         if decay_streak >= pre.TRIGGER_CONSECUTIVE_WINDOWS:
