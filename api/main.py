@@ -663,6 +663,16 @@ def register_view() -> dict[str, Any]:
 # The most recent run only. Every earlier run is still in the table — it is
 # append-only — but a page that averaged them would smooth over the moment a
 # number started moving, which is the only moment worth catching.
+# The most recent Lift Wing attempt, published whatever it says. M4-FR-21: a
+# gated or unavailable service is an unmet dependency, not a reason to quietly
+# substitute a comparator that happens to be reachable.
+LIFTWING_ATTEMPT_SQL = """
+SELECT attempted_at, requested, fetched, status, detail
+  FROM outcome.liftwing_attempts
+ ORDER BY attempted_at DESC
+ LIMIT 1
+"""
+
 LATEST_METRICS_SQL = """
 WITH latest AS (SELECT max(computed_at) AS at FROM outcome.prediction_metrics)
 SELECT m.*
@@ -703,6 +713,19 @@ def _metric_row(row: dict[str, Any]) -> dict[str, Any]:
         "baseline_pr_auc": row["baseline_pr_auc"],
         "margin": row["margin"],
         "margin_ci": [row["margin_ci_low"], row["margin_ci_high"]],
+        # The institutional benchmark, on the paired subset only. liftwing_n is
+        # smaller than n because Lift Wing is sampled, and model_pr_auc_on_paired
+        # is Bellwether's figure over exactly those events — NOT pr_auc, which
+        # covers the whole window. Comparing pr_auc against liftwing_pr_auc
+        # would set two populations against each other and call it a margin.
+        "liftwing": {
+            "n": row["liftwing_n"],
+            "liftwing_pr_auc": row["liftwing_pr_auc"],
+            "model_pr_auc_on_paired": row["model_pr_auc_on_paired"],
+            "margin": row["liftwing_margin"],
+            "margin_ci": [row["liftwing_margin_ci_low"], row["liftwing_margin_ci_high"]],
+            "note": "positive margin means Bellwether ahead; SRS 6.4 predicted it would not be",
+        },
     }
 
 
@@ -717,6 +740,7 @@ def metrics_view() -> dict[str, Any]:
     """
     with _connect() as conn:
         rows = conn.execute(LATEST_METRICS_SQL).fetchall()
+        attempt = conn.execute(LIFTWING_ATTEMPT_SQL).fetchone()
 
     if not rows:
         return {
@@ -761,6 +785,17 @@ def metrics_view() -> dict[str, Any]:
         "computed_at": rows[0]["computed_at"],
         "code_commit": rows[0]["code_commit"],
         "populations": populations,
+        "liftwing_last_attempt": (
+            None
+            if not attempt
+            else {
+                "attempted_at": attempt["attempted_at"],
+                "requested": attempt["requested"],
+                "fetched": attempt["fetched"],
+                "status": attempt["status"],
+                "detail": attempt["detail"],
+            }
+        ),
         "note": (
             "Live figures on register predictions. Distinct from /kc2, which is an "
             "offline backtest over a backfilled census — the two measure different "

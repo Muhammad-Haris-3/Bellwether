@@ -54,6 +54,13 @@ SCHEMA_EXPECTATIONS = {
     "015_m3_reproducibility": (
         "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
     ),
+    "019_m4_liftwing_comparison": (
+        "SELECT to_regclass('outcome.liftwing_attempts') IS NOT NULL"
+        "   AND EXISTS (SELECT 1 FROM information_schema.columns"
+        "                WHERE table_schema = 'outcome'"
+        "                  AND table_name = 'prediction_metrics'"
+        "                  AND column_name = 'liftwing_margin') AS present"
+    ),
     "018_m4_population": (
         "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
         "                WHERE table_schema = 'outcome'"

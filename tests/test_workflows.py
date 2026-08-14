@@ -22,6 +22,7 @@ SCHEDULED = {
     "reconcile.yml": "23 4 * * *",
     "reproduce.yml": "19 5 * * *",
     "metrics.yml": "7 */6 * * *",
+    "liftwing.yml": "41 7 * * *",
 }
 
 

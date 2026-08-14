@@ -1,0 +1,64 @@
+name: Lift Wing
+
+# Daily, and deliberately small.
+#
+# Fetches Wikimedia's own revert-risk score for a sample of matured predictions,
+# so the two models can be compared paired on the same events (M4-FR-18). SRS
+# §6.4 recorded before any model existed that Wikimedia's is expected to win.
+#
+# One HTTP request per revision against a free, donation-funded service, rate
+# limited well below anything they publish. A few hundred paired events settles
+# this comparison as well as ten thousand would, so the batch stays small and
+# the sample rate is published beside every figure it produces.
+#
+# A 401 or 403 is recorded as an unmet dependency and the comparison stays
+# absent (M4-FR-21). Wikimedia has been moving inference endpoints behind access
+# tokens, and DS-3's auth column still reads TBC in the SRS.
+on:
+  schedule:
+    - cron: "41 7 * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "How many revisions to score this run"
+        required: false
+        default: "200"
+
+concurrency:
+  group: liftwing
+  cancel-in-progress: false
+
+jobs:
+  liftwing:
+    name: Fetch the institutional benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      BELLWETHER_DATABASE_URL: ${{ secrets.BELLWETHER_DATABASE_URL }}
+      BELLWETHER_ENV: production
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements-pipeline.txt
+
+      - name: Fetch
+        run: |
+          set -o pipefail
+          python -m bellwether.liftwing \
+            --limit "${{ inputs.limit || '200' }}" 2>&1 | tee liftwing-output.txt
+
+      - name: Surface the failure
+        if: failure()
+        run: |
+          DETAIL=$(tail -40 liftwing-output.txt 2>/dev/null \
+            | sed 's/%/%25/g; s/\r//g' \
+            | awk '{printf "%s%%0A", $0}')
+          echo "::error title=liftwing failed::$DETAIL"

@@ -1,0 +1,155 @@
+"""The institutional benchmark (M4-FR-18 to FR-21).
+
+Mostly about what this must refuse to do: impute a missing score, substitute a
+reachable comparator for a gated one, or set two different populations against
+each other and call the difference a margin.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+import pytest
+import respx
+
+from bellwether import liftwing, metrics
+from bellwether.db import connect
+
+
+def test_the_module_imports() -> None:
+    assert liftwing.MODEL_NAME == "revertrisk-language-agnostic"
+
+
+def _limiter() -> Any:
+    return liftwing.RateLimiter(600)  # 100ms apart; the tests are not measuring politeness
+
+
+@respx.mock
+def test_a_score_is_read_from_the_probability_of_true() -> None:
+    respx.post(liftwing.ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "model_name": "revertrisk-language-agnostic",
+                "model_version": "3",
+                "output": {"prediction": True, "probabilities": {"true": 0.82, "false": 0.18}},
+            },
+        )
+    )
+    with httpx.Client() as client:
+        result = liftwing.score_one(client, _limiter(), 123)
+    assert result is not None
+    assert result["score"] == pytest.approx(0.82)
+    assert result["model_version"] == "3"
+
+
+@respx.mock
+def test_a_revision_they_will_not_score_is_absent_not_zero() -> None:
+    """A missing score imputed as 0.0 would make their model look wrong about an
+    edit it never saw — and would do so in the direction that flatters this
+    project, which is the direction to be most careful about."""
+    respx.post(liftwing.ENDPOINT).mock(return_value=httpx.Response(404, json={"detail": "gone"}))
+    with httpx.Client() as client:
+        assert liftwing.score_one(client, _limiter(), 123) is None
+
+
+@respx.mock
+def test_a_response_without_a_probability_is_absent_too() -> None:
+    respx.post(liftwing.ENDPOINT).mock(return_value=httpx.Response(200, json={"output": {}}))
+    with httpx.Client() as client:
+        assert liftwing.score_one(client, _limiter(), 123) is None
+
+
+@respx.mock
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_gated_service_raises_rather_than_returning_nothing(status: int) -> None:
+    """M4-FR-21. Silently returning None would look identical to "Wikimedia had
+    no opinion about these edits", and the benchmark would quietly become an
+    empty set nobody questioned."""
+    respx.post(liftwing.ENDPOINT).mock(return_value=httpx.Response(status, text="needs a token"))
+    with httpx.Client() as client, pytest.raises(liftwing.Gated):
+        liftwing.score_one(client, _limiter(), 123)
+
+
+# --- the comparison ---------------------------------------------------------
+
+
+def _paired(n: int, *, positives: int, theirs_better: bool) -> list[dict[str, Any]]:
+    """Lift Wing separates the classes cleanly; ours gets one positive in three
+    wrong when `theirs_better`.
+
+    The first version gave both scorers a perfect ranking and then asserted the
+    margin was negative. It was 0.0, correctly — two perfect scorers tie. A
+    fixture has to make the thing it claims to measure actually happen.
+    """
+    rows = []
+    for i in range(n):
+        label = i < positives
+        ours = 0.9 if label else 0.1
+        if theirs_better and label and i % 3 == 0:
+            ours = 0.05  # confidently wrong, where theirs is right
+        rows.append(
+            {
+                "label": label,
+                "score": ours,
+                "liftwing_score": 0.95 if label else 0.05,
+                "sampling_weight": 1.0,
+                "is_logged_out": label,
+            }
+        )
+    return rows
+
+
+def test_too_few_paired_events_publish_a_count_and_no_margin() -> None:
+    """A margin over twelve events is a number that should not be read, and
+    publishing it with a wide interval beside it is not enough — someone will
+    quote the point estimate."""
+    result = metrics.liftwing_comparison(_paired(12, positives=4, theirs_better=True))
+    assert result["liftwing_n"] == 12
+    assert result["liftwing_margin"] is None
+
+
+def test_the_margin_is_computed_only_on_events_both_models_scored() -> None:
+    """Lift Wing is sampled. Setting its PR-AUC over a few hundred events
+    against this project's over the whole window would be two populations
+    dressed as a margin, which is why model_pr_auc_on_paired exists and is not
+    the same field as pr_auc."""
+    rows = _paired(100, positives=25, theirs_better=True)
+    # Sampled: a spread of events was never sent, positives among them. Nulling
+    # a prefix instead would have removed every positive and left a subset with
+    # one class, which is a different thing being tested by accident.
+    for i, row in enumerate(rows):
+        if i % 2:
+            row["liftwing_score"] = None
+
+    result = metrics.liftwing_comparison(rows)
+    assert result["liftwing_n"] == 50
+    assert result["model_pr_auc_on_paired"] is not None
+
+
+def test_a_losing_margin_is_reported_as_readily_as_a_winning_one() -> None:
+    """SRS 6.4 predicted Wikimedia's model wins. The benchmark is worth nothing
+    if it only gets published when it does not."""
+    result = metrics.liftwing_comparison(_paired(200, positives=40, theirs_better=True))
+    assert result["liftwing_margin"] is not None
+    assert result["liftwing_margin"] < 0, "theirs is better here, and the sign must say so"
+    assert result["liftwing_margin_ci_low"] <= result["liftwing_margin"]
+
+
+@pytest.mark.db
+def test_an_attempt_is_recorded_even_when_nothing_was_fetched(fresh_db: None) -> None:
+    """M4-FR-21 again, at the run level. A gated service must leave a row
+    saying so; an absent comparison with no explanation is indistinguishable
+    from one nobody tried."""
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO outcome.liftwing_attempts (requested, fetched, status, detail)
+            VALUES (200, 0, 'gated', '403 from Lift Wing')
+            """
+        )
+        row = conn.execute(
+            "SELECT status, fetched FROM outcome.liftwing_attempts ORDER BY attempted_at DESC"
+        ).fetchone()
+    assert row is not None and row["status"] == "gated" and row["fetched"] == 0

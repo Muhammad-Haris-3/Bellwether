@@ -133,6 +133,7 @@ SELECT p.revid,
             THEN 'fast' ELSE 'slow' END                       AS lag_bucket,
        CASE WHEN COALESCE(s.edits_seen, 0) > 1 THEN 'yes' ELSE 'no' END
                                                               AS editor_has_history,
+       lw.score                                               AS liftwing_score,
        (o.ever_positive
         OR EXISTS (SELECT 1 FROM outcome.labels l
                     WHERE l.revid = p.revid AND l.label))      AS label
@@ -140,6 +141,7 @@ SELECT p.revid,
   JOIN landing.rc_events e ON e.revid = p.revid
   JOIN observed o          ON o.revid = p.revid
   LEFT JOIN landing.editor_state s ON s.user_key = e.user_name
+  LEFT JOIN outcome.liftwing_scores lw ON lw.revid = p.revid
  WHERE p.role = 'champion'
    AND (NOT %(cohort_only)s OR e.in_maturity_cohort)
    -- Two conditions, and dropping either one biases the sample.
@@ -193,14 +195,18 @@ INSERT INTO outcome.prediction_metrics
      provisional, n, n_positives, base_rate, weighted_base_rate, pr_auc,
      pr_auc_ci_low, pr_auc_ci_high, roc_auc, brier, baseline_pr_auc, margin,
      margin_ci_low, margin_ci_high, excluded_immature, excluded_late,
-     excluded_late_base_rate, code_commit, run_id)
+     excluded_late_base_rate, liftwing_n, liftwing_pr_auc, liftwing_margin,
+     liftwing_margin_ci_low, liftwing_margin_ci_high, model_pr_auc_on_paired,
+     code_commit, run_id)
 VALUES (%(population)s, %(window_label)s, %(window_start)s, %(window_end)s, %(segment)s,
         %(segment_level)s, %(maturity_hours)s, %(provisional)s, %(n)s,
         %(n_positives)s, %(base_rate)s, %(weighted_base_rate)s, %(pr_auc)s,
         %(pr_auc_ci_low)s, %(pr_auc_ci_high)s, %(roc_auc)s, %(brier)s,
         %(baseline_pr_auc)s, %(margin)s, %(margin_ci_low)s, %(margin_ci_high)s,
         %(excluded_immature)s, %(excluded_late)s, %(excluded_late_base_rate)s,
-        %(commit)s, %(run_id)s)
+        %(liftwing_n)s, %(liftwing_pr_auc)s, %(liftwing_margin)s,
+        %(liftwing_margin_ci_low)s, %(liftwing_margin_ci_high)s,
+        %(model_pr_auc_on_paired)s, %(commit)s, %(run_id)s)
 RETURNING metric_id
 """
 
@@ -325,6 +331,52 @@ def compute(
         margin = float(average_precision_score(y, scores)) - out["baseline_pr_auc"]
     out["margin"] = round(margin, 6)
     return out
+
+
+def liftwing_comparison(
+    rows: list[dict[str, Any]], *, resamples: int = BOOTSTRAP_RESAMPLES
+) -> dict[str, Any]:
+    """Bellwether against Wikimedia's production model, paired (M4-FR-18).
+
+    On the subset both scored, and nothing else. Lift Wing is sampled rather
+    than exhaustive, so setting its PR-AUC over a few hundred events against
+    this project's over the whole window would be two populations dressed as a
+    margin. `model_pr_auc_on_paired` exists for exactly that reason: it is the
+    number the margin is actually built from, and it is not `pr_auc`.
+
+    Positive margin means Bellwether ahead. SRS 6.4 predicted, before any model
+    existed, that it would not be — and that prediction is left standing
+    whichever way this falls.
+    """
+    paired = [r for r in rows if r.get("liftwing_score") is not None]
+    empty: dict[str, Any] = {
+        "liftwing_n": len(paired),
+        "liftwing_pr_auc": None,
+        "liftwing_margin": None,
+        "liftwing_margin_ci_low": None,
+        "liftwing_margin_ci_high": None,
+        "model_pr_auc_on_paired": None,
+    }
+    # Too few to say anything. Published as a count with no margin, rather than
+    # as a margin nobody should read.
+    if len(paired) < 30:
+        return empty
+
+    y = np.asarray([1 if r["label"] else 0 for r in paired], dtype=int)
+    if y.sum() == 0 or y.sum() == len(y):
+        return empty
+
+    ours = np.asarray([float(r["score"]) for r in paired], dtype=float)
+    theirs = np.asarray([float(r["liftwing_score"]) for r in paired], dtype=float)
+    margin, low, high = paired_margin(y, ours, theirs, resamples=resamples)
+    return {
+        "liftwing_n": len(paired),
+        "liftwing_pr_auc": round(float(average_precision_score(y, theirs)), 6),
+        "liftwing_margin": round(margin, 6),
+        "liftwing_margin_ci_low": round(low, 6),
+        "liftwing_margin_ci_high": round(high, 6),
+        "model_pr_auc_on_paired": round(float(average_precision_score(y, ours)), 6),
+    }
 
 
 def calibration(
@@ -479,6 +531,7 @@ def _write(
 ) -> int | None:
     payload = {
         **common,
+        **(liftwing_comparison(rows) if aggregate else {}),
         **compute(
             rows,
             resamples=BOOTSTRAP_RESAMPLES if aggregate else SEGMENT_RESAMPLES,
@@ -486,7 +539,14 @@ def _write(
         ),
     }
     payload.setdefault("base_rate", None)
+    payload.setdefault("liftwing_n", 0)
     for key in (
+        "liftwing_n",
+        "liftwing_pr_auc",
+        "liftwing_margin",
+        "liftwing_margin_ci_low",
+        "liftwing_margin_ci_high",
+        "model_pr_auc_on_paired",
         "weighted_base_rate",
         "pr_auc",
         "pr_auc_ci_low",
