@@ -54,6 +54,13 @@ SCHEMA_EXPECTATIONS = {
     "015_m3_reproducibility": (
         "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
     ),
+    "028_m7_human_label_training": (
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
+        "                WHERE table_schema = 'register' AND table_name = 'model_registry'"
+        "                  AND column_name = 'human_labels')"
+        "   AND EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace"
+        "                WHERE n.nspname = 'app' AND p.proname = 'labels_for_training') AS present"
+    ),
     "027_m7_label_slices": (
         "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
         "                WHERE table_schema = 'app' AND table_name = 'human_labels'"

@@ -25,6 +25,7 @@ import sys
 from datetime import datetime
 from typing import Any
 
+import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import average_precision_score, brier_score_loss
 
@@ -34,6 +35,18 @@ from bellwether.db import connect
 from bellwether.runlog import RunContext, new_run_id
 
 JOB = "train"
+
+# M7-FR-7, SRS FR-48. Fixed HERE, before any model is trained with it, and
+# recorded in the registry entry of every model that used it.
+#
+# One human judgement counts as three automatically-labelled events. The number
+# is a choice and it is stated rather than derived: deriving it would mean
+# trying several and keeping the one that scored best, which is a hyperparameter
+# selected on the evaluation it is about to be judged by. If it is wrong, that
+# is an amendment with a date, made before the run it would change.
+HUMAN_LABEL_WEIGHT = 3.0
+
+HUMAN_LABELS_SQL = "SELECT * FROM app.labels_for_training(%s, %s)"
 
 # Fixed here, not searched. See the module docstring.
 HYPERPARAMETERS: dict[str, Any] = {
@@ -65,6 +78,47 @@ def run(*, window_start: str, window_end: str) -> dict[str, Any]:
     matrix, labels, names = evaluate.build_matrix(rows)
     version = version_for(start, end, settings.build_id)
 
+    # Human labels enter as ADDITIONAL rows, never as a replacement for the
+    # revert label (M7-FR-6). An edit a reviewer called bad but nobody reverted
+    # appears twice: once with the proxy's answer at weight 1, and once with the
+    # human's at weight 3. Overwriting the proxy label instead would make every
+    # figure this project has published unverifiable, because nobody could tell
+    # afterwards which rows came from where.
+    #
+    # `unsure` contributes no row at all. It is a reviewer declining to answer,
+    # and turning that into a target would invent an opinion.
+    with connect() as conn:
+        human = conn.execute(HUMAN_LABELS_SQL, (start, end)).fetchall()
+
+    by_revid = {row["revid"]: index for index, row in enumerate(rows)}
+    extra_rows, extra_labels, slices = [], [], {"ranked": 0, "random": 0}
+    for label_row in human:
+        index = by_revid.get(label_row["revid"])
+        if index is None:
+            # Judged, but outside this training window's feature matrix. Not an
+            # error: the queue and the training window cover different spans.
+            continue
+        extra_rows.append(matrix[index])
+        extra_labels.append(1 if label_row["verdict"] == "bad_edit" else 0)
+        slices[label_row["queue_slice"]] = slices.get(label_row["queue_slice"], 0) + 1
+
+    sample_weight = np.concatenate(
+        [
+            np.ones(len(labels), dtype=float),
+            np.full(len(extra_labels), HUMAN_LABEL_WEIGHT, dtype=float),
+        ]
+    )
+    if extra_rows:
+        matrix = np.vstack([matrix, np.asarray(extra_rows)])
+        labels = np.concatenate([labels, np.asarray(extra_labels, dtype=labels.dtype)])
+
+    human_labels_used = {
+        "weight": HUMAN_LABEL_WEIGHT,
+        "n_used": len(extra_labels),
+        "n_available": len(human),
+        "slices": slices,
+    }
+
     # M5-FR-6. The quartile boundaries P-5's segments are cut on, frozen here
     # with everything else this model is judged against.
     #
@@ -80,7 +134,7 @@ def run(*, window_start: str, window_end: str) -> dict[str, Any]:
     }
 
     model = HistGradientBoostingClassifier(**HYPERPARAMETERS)
-    model.fit(matrix, labels)
+    model.fit(matrix, labels, sample_weight=sample_weight)
 
     # In-sample, and labelled as such. The honest out-of-sample numbers come
     # from the rolling-origin evaluation and from the register once this model
@@ -112,6 +166,7 @@ def run(*, window_start: str, window_end: str) -> dict[str, Any]:
         "code_commit": settings.build_id,
         "sklearn_version": __import__("sklearn").__version__,
         "segment_bands": segment_bands,
+        "human_labels": human_labels_used,
     }
     card_file = registry.write_card(version, card)
 
@@ -131,6 +186,7 @@ def run(*, window_start: str, window_end: str) -> dict[str, Any]:
                     "artifact_path": str(artifact.relative_to(registry.MODELS_DIR.parent)),
                     "artifact_sha256": digest,
                     "segment_bands": json.dumps(segment_bands),
+                    "human_labels": json.dumps(human_labels_used),
                     "code_commit": settings.build_id,
                     "run_id": run_id,
                 },
@@ -144,6 +200,11 @@ def run(*, window_start: str, window_end: str) -> dict[str, Any]:
         f"  in-sample PR-AUC {metrics['in_sample_pr_auc']:.4f} "
         f"(base rate {metrics['base_rate']:.4f})"
     )
+    if human_labels_used["n_used"]:
+        print(
+            f"  human   {human_labels_used['n_used']} label(s) at weight "
+            f"{HUMAN_LABEL_WEIGHT} — {human_labels_used['slices']}"
+        )
     print(f"  artifact {artifact.name}  sha256 {digest[:12]}...")
     print(f"  card     {card_file.name}")
     print("  commit models/ so the model is verifiable from git alone")

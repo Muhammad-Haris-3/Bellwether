@@ -174,9 +174,9 @@ INSERT_MODEL_SQL = """
 INSERT INTO register.model_registry
     (model_version, training_start, training_end, n_train_events, n_train_positives,
      feature_names, hyperparameters, offline_metrics, artifact_path, artifact_sha256,
-     segment_bands, code_commit, registered_by_run)
+     segment_bands, human_labels, code_commit, registered_by_run)
 VALUES (%(model_version)s, %(training_start)s, %(training_end)s, %(n_train_events)s,
         %(n_train_positives)s, %(feature_names)s, %(hyperparameters)s::jsonb,
         %(offline_metrics)s::jsonb, %(artifact_path)s, %(artifact_sha256)s,
-        %(segment_bands)s::jsonb, %(code_commit)s, %(run_id)s)
+        %(segment_bands)s::jsonb, %(human_labels)s::jsonb, %(code_commit)s, %(run_id)s)
 """

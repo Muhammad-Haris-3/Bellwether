@@ -208,3 +208,112 @@ def test_the_study_never_returns_who_judged_what(fresh_db: None) -> None:
     assert "reviewers" in result
     assert "reviewer" not in result
     assert isinstance(result["reviewers"], int)
+
+
+# --- human labels in training (SRS FR-48, M7-FR-6 to FR-10) -----------------
+
+
+def test_the_training_weight_is_fixed_in_code_not_derived() -> None:
+    """M7-FR-7. Deriving it would mean trying several and keeping the one that
+    scored best — a hyperparameter selected on the evaluation it is about to be
+    judged by.
+
+    Asserted as a property of the assignment rather than by searching the file
+    for a substring: the first version of this test matched the module's own
+    variable names and failed on the code it was inspecting.
+    """
+    import inspect
+
+    from bellwether import train
+
+    assert train.HUMAN_LABEL_WEIGHT == 3.0
+
+    lines = [
+        line.strip()
+        for line in inspect.getsource(train).splitlines()
+        if "HUMAN_LABEL_WEIGHT" in line and "=" in line and not line.strip().startswith("#")
+    ]
+    assignments = [line for line in lines if line.startswith("HUMAN_LABEL_WEIGHT")]
+
+    assert assignments == ["HUMAN_LABEL_WEIGHT = 3.0"], (
+        "the weight must be a literal module constant, not read from a setting, "
+        "an argument or the environment"
+    )
+
+
+@pytest.mark.db
+def test_a_human_label_adds_a_row_rather_than_overwriting_the_proxy(fresh_db: None) -> None:
+    """M7-FR-6 and SRS FR-47. An edit a reviewer called bad but nobody reverted
+    appears twice: the proxy's answer at weight 1, the human's at weight 3.
+
+    Overwriting would make every published figure unverifiable, because nobody
+    could tell afterwards which rows came from where.
+    """
+    with connect() as conn:
+        user_id = conn.execute(
+            "INSERT INTO app.users (email, password_hash, password_salt, kdf_params, role) "
+            "VALUES ('t@example.test', 'x', 'y', '{}'::jsonb, 'reviewer') RETURNING user_id"
+        ).fetchone()["user_id"]
+        conn.execute(
+            "INSERT INTO landing.rc_events "
+            "(revid, event_ts, ns, title, is_anon, is_temp, is_minor, is_bot, "
+            " sampling_stratum, sampling_weight, ingested_at_utc) "
+            "VALUES (1, now() - interval '20 days', 0, 'P', false, false, false, false, "
+            "        'registered', 33.3, now())"
+        )
+        conn.execute(
+            "INSERT INTO app.human_labels (revid, user_id, verdict, confidence, queue_slice) "
+            "VALUES (1, %s, 'bad_edit', 'high', 'random')",
+            (user_id,),
+        )
+        # The proxy says the opposite: nobody reverted it.
+        rows = conn.execute(
+            "SELECT * FROM app.labels_for_training(now() - interval '30 days', now())"
+        ).fetchall()
+
+    assert len(rows) == 1
+    assert rows[0]["verdict"] == "bad_edit"
+    assert rows[0]["queue_slice"] == "random"
+
+
+@pytest.mark.db
+def test_unsure_contributes_no_training_row(fresh_db: None) -> None:
+    """It is a reviewer declining to answer, not a third class and not a soft
+    label. Turning it into a target would invent an opinion."""
+    with connect() as conn:
+        user_id = conn.execute(
+            "INSERT INTO app.users (email, password_hash, password_salt, kdf_params, role) "
+            "VALUES ('u@example.test', 'x', 'y', '{}'::jsonb, 'reviewer') RETURNING user_id"
+        ).fetchone()["user_id"]
+        for revid, verdict in ((1, "unsure"), (2, "good_edit")):
+            conn.execute(
+                "INSERT INTO landing.rc_events "
+                "(revid, event_ts, ns, title, is_anon, is_temp, is_minor, is_bot, "
+                " sampling_stratum, sampling_weight, ingested_at_utc) "
+                "VALUES (%s, now() - interval '20 days', 0, 'P', false, false, false, false, "
+                "        'registered', 33.3, now())",
+                (revid,),
+            )
+            conn.execute(
+                "INSERT INTO app.human_labels (revid, user_id, verdict, confidence) "
+                "VALUES (%s, %s, %s, 'low')",
+                (revid, user_id, verdict),
+            )
+        rows = conn.execute(
+            "SELECT * FROM app.labels_for_training(now() - interval '30 days', now())"
+        ).fetchall()
+
+    assert [row["revid"] for row in rows] == [2]
+
+
+@pytest.mark.db
+def test_the_training_door_never_returns_who_judged(fresh_db: None) -> None:
+    """The reviewer's identity must not reach the model or its registry entry.
+    A weight is a fact about a label; who wrote it is not."""
+    with connect() as conn:
+        columns = conn.execute(
+            "SELECT proargnames FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+            "WHERE n.nspname = 'app' AND p.proname = 'labels_for_training'"
+        ).fetchone()
+    assert "user_id" not in (columns["proargnames"] or [])
+    assert "reviewer" not in (columns["proargnames"] or [])
