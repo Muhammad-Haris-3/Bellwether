@@ -54,6 +54,12 @@ SCHEMA_EXPECTATIONS = {
     "015_m3_reproducibility": (
         "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
     ),
+    "023_m6_auth_lookups": (
+        "SELECT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace"
+        "                WHERE n.nspname = 'app' AND p.proname = 'credentials_for')"
+        "   AND EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace"
+        "                WHERE n.nspname = 'app' AND p.proname = 'session_for') AS present"
+    ),
     "022_m6_app": (
         "SELECT to_regclass('app.users') IS NOT NULL"
         "   AND to_regclass('app.sessions') IS NOT NULL"

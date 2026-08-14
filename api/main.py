@@ -21,9 +21,10 @@ from __future__ import annotations
 from typing import Any
 
 import psycopg
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
+from api import sessions
 from bellwether.config import get_settings
 from bellwether.schema import SCHEMA_EXPECTATIONS
 
@@ -1064,4 +1065,42 @@ def decisions_view() -> dict[str, Any]:
             "included because a decision log without them explains why a model was "
             "promoted but not why anything was trained."
         ),
+    }
+
+
+# --- M6: authentication ----------------------------------------------------
+#
+# The endpoints below are the only ones that can write anything, and they write
+# to two tables: human labels and the audit log. Everything else in this file
+# reads.
+
+
+@app.post("/auth/sign-in")
+def sign_in_endpoint(
+    request: Request, response: Response, credentials: sessions.Credentials
+) -> dict[str, Any]:
+    return sessions.sign_in(request, response, credentials)
+
+
+@app.post("/auth/sign-out")
+def sign_out_endpoint(request: Request, response: Response) -> dict[str, str]:
+    return sessions.sign_out(request, response)
+
+
+@app.get("/auth/me")
+def me_endpoint(request: Request) -> dict[str, Any]:
+    """Who the browser is, if anyone.
+
+    200 with `authenticated: false` rather than a 401, because "nobody is
+    signed in" is the ordinary state of a public page and not an error the
+    frontend should render as a failure.
+    """
+    user = sessions.current_user(request.cookies.get(sessions.SESSION_COOKIE))
+    if not user:
+        return {"authenticated": False, "auth_configured": get_settings().app_role_configured}
+    return {
+        "authenticated": True,
+        "email": user["email"],
+        "role": user["role"],
+        "auth_configured": True,
     }

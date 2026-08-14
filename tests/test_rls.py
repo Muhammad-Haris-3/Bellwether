@@ -226,3 +226,50 @@ def test_only_an_admin_can_freeze_automation(people: dict[str, Any]) -> None:
     with connect() as conn:
         row = conn.execute("SELECT frozen FROM app.automation_freeze").fetchone()
     assert row["frozen"] is True
+
+
+@pytest.mark.db
+def test_the_pre_auth_door_cannot_be_turned_into_a_user_list(people: dict[str, Any]) -> None:
+    """sql/023 exists because the policy protecting app.users forbids the query
+    that would satisfy it — sign-in must read the table before there is an
+    acting user to gate on.
+
+    The door is narrow on purpose: it takes an exact address and returns at most
+    one row. It has no predicate to widen, so holding the grant lets a caller
+    check one address at a time and never enumerate.
+    """
+    with _as_app(None) as conn:
+        found = conn.execute(
+            "SELECT * FROM app.credentials_for(%s)", ("reviewer@example.test",)
+        ).fetchall()
+        absent = conn.execute(
+            "SELECT * FROM app.credentials_for(%s)", ("nobody@example.test",)
+        ).fetchall()
+        # The table itself stays shut, even to the role that may call the door.
+        direct = conn.execute("SELECT count(*) AS n FROM app.users").fetchone()
+
+    assert len(found) == 1
+    assert absent == []
+    assert direct["n"] == 0
+
+
+@pytest.mark.db
+def test_the_session_door_resolves_a_token_and_nothing_else(people: dict[str, Any]) -> None:
+    """Keyed on the token hash rather than on a user, so the grant lets a caller
+    resolve a token it already holds and cannot ask whose sessions exist."""
+    token, digest = auth.new_session_token()
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO app.sessions (user_id, token_hash, expires_at) "
+            "VALUES (%s, %s, now() + interval '1 hour')",
+            (people["reviewer"], digest),
+        )
+
+    with _as_app(None) as conn:
+        mine = conn.execute("SELECT * FROM app.session_for(%s)", (digest,)).fetchall()
+        other = conn.execute(
+            "SELECT * FROM app.session_for(%s)", (auth.hash_token("guessed"),)
+        ).fetchall()
+
+    assert len(mine) == 1 and mine[0]["role"] == "reviewer"
+    assert other == []

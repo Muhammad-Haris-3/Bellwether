@@ -48,6 +48,15 @@ class Settings(BaseSettings):
 
     database_url: str = ""
     readonly_database_url: str = ""
+
+    # The application's own credential (M6-FR-7). Distinct from both: the
+    # pipeline writes evidence, the public API only reads, and this one may
+    # append human labels and audit rows and nothing else.
+    #
+    # Empty is a valid state — the public endpoints work without it, and an
+    # unconfigured deployment should serve the read-only pages rather than fail
+    # to start.
+    app_database_url: str = ""
     env: str = "local"
 
     # Left empty so the hosting platform's own build identifier can fill it in;
@@ -197,6 +206,17 @@ class Settings(BaseSettings):
         if not url:
             return "NOT CONFIGURED"
         return url.split("@")[-1].split("?")[0]
+
+    @property
+    def app_role_configured(self) -> bool:
+        """Reported rather than assumed, like readonly_role_in_use.
+
+        An application credential that silently fell back to the writer would
+        hand the serving container write access to every evidential table,
+        which is the one thing NFR-8 forbids. So there is no fallback: if this
+        is unset, authenticated features are unavailable and say so.
+        """
+        return bool(self.app_database_url)
 
     @property
     def readonly_role_in_use(self) -> bool:
