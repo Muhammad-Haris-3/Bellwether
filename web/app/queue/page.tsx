@@ -340,7 +340,8 @@ export default function QueuePage() {
 
       {queue && queue.items.length > 0 && (
         <ScrollReveal>
-          <table>
+          <div className="scroller">
+<table>
             <caption className="sr-only">
               Recent edits ranked by the serving model&rsquo;s predicted revert
               risk. Each row states whether its outcome is settled.
@@ -428,6 +429,7 @@ export default function QueuePage() {
               ))}
             </tbody>
           </table>
+</div>
         </ScrollReveal>
       )}
 

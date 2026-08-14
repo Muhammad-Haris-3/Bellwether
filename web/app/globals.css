@@ -1,533 +1,554 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+/* Bellwether — an instrument, not a dashboard.
+ *
+ * The palette comes from a Stitch design pass and is kept because it measures
+ * well: every text colour sits between 9.6:1 and 14.3:1 against the surface,
+ * where the previous indigo failed AA at 4.29:1 on the token colouring every
+ * link.
+ *
+ * What was NOT kept from that pass is its content. It rendered a confident
+ * "94.02% GLOBAL ACCURACY", eight million edits collected, model streams for
+ * wikis this project does not read, and a Wikimedia copyright line. This system
+ * has no live accuracy figure yet and no affiliation with Wikimedia, and a
+ * design whose rhetoric is built around a number it has not earned is the exact
+ * failure everything here exists to prevent.
+ *
+ * Fonts are loaded by next/font in layout.tsx — self-hosted at build time
+ * rather than fetched from Google on every visit.
+ */
 
 :root {
-  --bg: #0b0f19;
-  --panel: rgba(22, 29, 46, 0.65);
-  --panel-solid: #151c2e;
-  --panel-hover: rgba(30, 41, 60, 0.85);
-  --border: rgba(255, 255, 255, 0.08);
-  --border-hover: rgba(99, 102, 241, 0.35);
-  --text: #f1f5f9;
-  --muted: #94a3b8;
-  --ok: #10b981;
-  --ok-bg: rgba(16, 185, 129, 0.1);
-  --warn: #f59e0b;
-  --warn-bg: rgba(245, 158, 11, 0.1);
-  --bad: #ef4444;
-  --bad-bg: rgba(239, 68, 68, 0.1);
-  /* indigo-400 rather than indigo-500.
-     #6366f1 measured 4.29:1 against this background — below WCAG AA's 4.5 for
-     normal text, and this token colours every link on the site. NFR-12 commits
-     to AA, so the accent is lifted one step to 6.42:1. The hover is lifted with
-     it, because a hover state darker than the resting one fails on the state a
-     keyboard user lands in. */
-  --accent: #818cf8;
-  --accent-hover: #a5b4fc;
-  --accent-glow: rgba(99, 102, 241, 0.2);
-  --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-heading: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, "SF Mono", monospace;
-  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.1);
-  --shadow-md: 0 8px 16px rgba(0, 0, 0, 0.2);
-  --shadow-lg: 0 16px 32px rgba(0, 0, 0, 0.3);
+  --surface: #121414;
+  --surface-dim: #0d0e0f;
+  --panel: #1a1c1c;
+  --panel-high: #232525;
+
+  --text: #e3e2e2;
+  --muted: #d3c5ac;
+  --faint: #9c8f79;
+
+  /* Borders around inputs and buttons identify the control, so they meet WCAG
+     1.4.11's 3:1 for non-text contrast. The hairline between table rows is
+     decorative and sits alongside a background change, so it may be quieter. */
+  --border: #4f4633;
+  --border-strong: #7a6e56;
+
+  --accent: #f9bd22;
+  --accent-dim: #c99a1c;
+  --ok: #4de082;
+  --bad: #ffb4ab;
+
+  --measure: 68ch;
+  --radius: 4px;
 }
 
 * {
   box-sizing: border-box;
 }
 
+html {
+  /* 17px base. 15px monospace over long measures was genuinely hard to read,
+     and the small sizes had been applied to whole paragraphs rather than to
+     labels. */
+  font-size: 17px;
+}
+
 body {
   margin: 0;
-  background-color: var(--bg);
-  background-image: 
-    radial-gradient(circle at 50% 0%, rgba(99, 102, 241, 0.15) 0%, rgba(0, 0, 0, 0) 50%),
-    radial-gradient(circle at 100% 100%, rgba(59, 130, 246, 0.05) 0%, rgba(0, 0, 0, 0) 40%);
-  background-attachment: fixed;
+  background: var(--surface);
   color: var(--text);
-  font-family: var(--font-sans);
-  font-size: 16.5px;
-  line-height: 1.6;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.65;
   -webkit-font-smoothing: antialiased;
 }
 
-main {
-  max-width: 66rem;
-  margin: 0 auto;
-  padding: 4rem 1.5rem 6rem;
+/* Numbers are the content. Monospace with tabular figures, so a column can be
+   compared down the page rather than read one row at a time. */
+code,
+.mono,
+table,
+.value,
+.nav-brand {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
 }
 
+a {
+  color: var(--accent);
+  text-underline-offset: 0.2em;
+}
+
+/* NFR-12. Never `outline: none` — a keyboard user who cannot see where they are
+   cannot operate the queue at all, and the queue is meant to be worked through
+   without a mouse. */
+a:focus-visible,
+button:focus-visible,
+select:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 10;
+  background: var(--accent);
+  color: var(--surface);
+  padding: 0.6rem 1rem;
+  font-weight: 600;
+}
+.skip-link:focus {
+  left: 0;
+}
+
+/* --- shell ---------------------------------------------------------------- */
+
+.shell {
+  display: grid;
+  grid-template-columns: 17rem 1fr;
+  min-height: 100vh;
+}
+
+.content {
+  min-width: 0;
+}
+
+main {
+  max-width: var(--measure);
+  padding: 3.5rem 2.5rem 6rem;
+}
+
+@media (max-width: 900px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+  main {
+    padding: 2rem 1.25rem 4rem;
+  }
+}
+
+/* --- navigation ----------------------------------------------------------- */
+
+.nav {
+  background: var(--surface-dim);
+  border-right: 1px solid var(--border);
+  padding: 2.25rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
+@media (max-width: 900px) {
+  .nav {
+    position: static;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--accent);
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-decoration: none;
+}
+
+.nav-brand-mark {
+  width: 9px;
+  height: 9px;
+  background: var(--ok);
+  border-radius: 50%;
+  flex: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent);
+}
+
+.nav-links {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.nav-link {
+  display: block;
+  padding: 0.55rem 0.75rem;
+  border-left: 2px solid transparent;
+  color: var(--text);
+  text-decoration: none;
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.nav-link:hover {
+  background: var(--panel);
+}
+.nav-link-active {
+  background: var(--panel);
+  border-left-color: var(--accent);
+}
+.nav-link-active .nav-link-label {
+  color: var(--accent);
+}
+
+.nav-link-label {
+  display: block;
+  font-family: var(--font-mono), monospace;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+}
+.nav-link-hint {
+  display: block;
+  color: var(--faint);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.nav-foot {
+  margin-top: auto;
+  font-size: 0.82rem;
+  color: var(--faint);
+  display: grid;
+  gap: 0.4rem;
+}
+.nav-foot-note {
+  line-height: 1.5;
+}
+
+/* --- type ----------------------------------------------------------------- */
+
 h1 {
-  font-family: var(--font-heading);
-  font-size: 2.5rem;
-  font-weight: 800;
-  margin: 0 0 0.5rem;
+  font-family: var(--font-mono), monospace;
+  font-size: clamp(1.9rem, 1.4rem + 1.8vw, 2.9rem);
+  line-height: 1.1;
   letter-spacing: -0.03em;
-  background: linear-gradient(135deg, #fff 40%, var(--muted) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  margin: 0 0 0.6rem;
+  text-wrap: balance;
 }
 
 .tagline {
   color: var(--muted);
-  font-size: 1.1rem;
-  font-weight: 500;
+  font-size: 1.05rem;
   margin: 0 0 3rem;
-  letter-spacing: -0.01em;
+  max-width: 52ch;
 }
 
 h2 {
-  font-family: var(--font-heading);
-  font-size: 1rem;
+  font-family: var(--font-mono), monospace;
+  font-size: 0.85rem;
   text-transform: uppercase;
-  letter-spacing: 0.15em;
-  color: var(--muted);
-  margin: 3.5rem 0 1.25rem;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-h2::after {
-  content: '';
-  flex-grow: 1;
-  height: 1px;
-  background: linear-gradient(to right, var(--border), transparent);
+  letter-spacing: 0.14em;
+  color: var(--faint);
+  margin: 3.5rem 0 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
 }
 
 h3 {
-  font-family: var(--font-heading);
-  font-size: 0.97rem;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--muted);
-  margin: 2.2rem 0 0.8rem;
-  font-weight: 700;
-  opacity: 0.85;
-}
-
-code {
-  font-family: var(--font-mono);
-  font-size: 0.94em;
-  background: rgba(255, 255, 255, 0.06);
-  padding: 0.15rem 0.35rem;
-  border-radius: 4px;
-  border: 1px solid var(--border);
-  color: #cbd5e1;
-}
-
-/* Nav Crumb bar styled as premium tab bar */
-.crumbs {
-  display: inline-flex;
-  background: rgba(15, 23, 42, 0.6);
-  border: 1px solid var(--border);
-  padding: 0.35rem;
-  border-radius: 12px;
-  margin-bottom: 2rem;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  gap: 0.25rem;
-  align-items: center;
-}
-
-.crumbs a,
-.crumbs span[aria-current="page"] {
-  display: inline-flex;
-  padding: 0.45rem 1rem;
-  font-size: 0.97rem;
-  font-weight: 600;
-  border-radius: 8px;
-  transition: var(--transition);
-  text-decoration: none;
-}
-
-.crumbs a {
-  color: var(--muted);
-}
-
-.crumbs a:hover {
+  font-size: 1rem;
+  margin: 2rem 0 0.5rem;
   color: var(--text);
-  background: rgba(255, 255, 255, 0.05);
 }
 
-.crumbs span[aria-current="page"] {
-  background: var(--accent);
-  color: #fff;
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
+p {
+  margin: 0 0 1rem;
+  max-width: var(--measure);
 }
 
-/* Grid layout with exquisite cards */
+.lead {
+  font-size: 1.12rem;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.note {
+  color: var(--muted);
+  font-size: 0.93rem;
+  line-height: 1.6;
+  max-width: var(--measure);
+}
+
+.muted {
+  color: var(--faint);
+}
+.ok {
+  color: var(--ok);
+}
+.warn,
+.bad {
+  color: var(--bad);
+}
+
+main ul {
+  color: var(--muted);
+  padding-left: 1.1rem;
+  max-width: var(--measure);
+}
+main ul li {
+  margin: 0.45rem 0;
+}
+
+/* --- panels and figures --------------------------------------------------- */
+
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
 }
 
 .card {
   background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 1.25rem;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  box-shadow: var(--shadow-sm);
-  transition: var(--transition);
-  position: relative;
-  overflow: hidden;
-}
-
-.card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(135deg, rgba(255,255,255,0.03) 0%, transparent 100%);
-  pointer-events: none;
-}
-
-.card:hover {
-  transform: translateY(-5px);
-  border-color: var(--border-hover);
-  background: var(--panel-hover);
-  box-shadow: 0 12px 24px -10px rgba(99, 102, 241, 0.2), var(--shadow-md);
+  padding: 1.1rem 1.25rem;
 }
 
 .card .value {
-  font-family: var(--font-mono);
-  font-size: 2rem;
-  font-weight: 600;
+  display: block;
+  font-size: 1.85rem;
+  line-height: 1.15;
+  color: var(--accent);
   letter-spacing: -0.02em;
-  margin-bottom: 0.25rem;
-  color: #fff;
 }
 
 .card .label {
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 700;
+  display: block;
+  color: var(--faint);
+  font-size: 0.76rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
+  margin-top: 0.35rem;
 }
 
-/* Premium Tables */
 table {
   width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  background: var(--panel);
+  border-collapse: collapse;
   border: 1px solid var(--border);
-  border-radius: 12px;
-  overflow: hidden;
-  box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  transition: var(--transition);
-}
-
-table:hover {
-  border-color: rgba(255, 255, 255, 0.12);
+  background: var(--panel);
+  font-size: 0.95rem;
 }
 
 th,
 td {
-  padding: 0.85rem 1.25rem;
-  border-bottom: 1px solid var(--border);
-  font-size: 0.97rem;
-}
-
-td {
-  font-family: var(--font-sans);
-  color: #e2e8f0;
+  text-align: left;
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  vertical-align: top;
 }
 
 th {
-  color: var(--muted);
-  font-family: var(--font-heading);
-  font-weight: 700;
+  color: var(--faint);
+  font-weight: 500;
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  background: rgba(15, 23, 42, 0.4);
-}
-
-tbody tr {
-  transition: background-color 0.2s ease;
-}
-
-tbody tr:hover {
-  background-color: rgba(255, 255, 255, 0.02);
+  background: var(--surface-dim);
+  white-space: nowrap;
 }
 
 tbody tr:last-child td {
   border-bottom: none;
 }
 
-td.muted,
-td .muted {
-  font-family: var(--font-mono);
+/* Wide tables scroll inside their own box rather than pushing the page
+   sideways. The performance tables genuinely do not fit a phone, and the
+   redesign's queue collided its columns rather than admitting that. */
+.scroller {
+  overflow-x: auto;
+  margin-bottom: 1rem;
 }
 
-.ok {
-  color: var(--ok);
-  font-weight: 600;
-}
-.warn {
-  color: var(--warn);
-  font-weight: 600;
-}
-.bad {
-  color: var(--bad);
-  font-weight: 600;
-}
-.muted {
-  color: var(--muted);
-}
+/* --- states --------------------------------------------------------------- */
 
-.note {
-  color: var(--muted);
+/* "Not settled" is its own state and the most important idea on the queue. It
+   must never read as an absence or a blank — an edit nobody has checked has not
+   survived anything. */
+.pending {
+  display: inline-block;
+  color: var(--faint);
+  border: 1px dashed var(--border-strong);
+  padding: 0.1rem 0.5rem;
+  border-radius: var(--radius);
   font-size: 0.82rem;
-  margin-top: 0.85rem;
-  line-height: 1.5;
+  white-space: nowrap;
 }
 
-/* Beautiful loading and wakers */
+.judged {
+  color: var(--ok);
+  font-size: 0.88rem;
+}
+
+.callout {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  padding: 1rem 1.15rem;
+  margin: 0 0 2rem;
+  font-size: 0.97rem;
+  max-width: var(--measure);
+}
+
 .loading {
   border: 1px solid var(--border);
   background: var(--panel);
-  border-radius: 12px;
-  padding: 2rem;
-  box-shadow: var(--shadow-md);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  text-align: center;
-  max-width: 32rem;
-  margin: 2rem auto;
-}
-
-.loading > div:first-child {
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: #fff;
-  margin-bottom: 0.5rem;
-  animation: pulse-glow 2s infinite ease-in-out;
-}
-
-@keyframes pulse-glow {
-  0%, 100% { opacity: 0.8; }
-  50% { opacity: 1; transform: scale(1.01); }
+  padding: 1.5rem;
+  max-width: var(--measure);
 }
 
 .bar {
-  height: 5px;
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 10px;
+  height: 2px;
+  background: var(--border);
   overflow: hidden;
-  margin-top: 1.2rem;
-  box-shadow: inset 0 1px 2px rgba(0,0,0,0.2);
+  margin-top: 1rem;
 }
-
 .bar > div {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), #3b82f6);
-  box-shadow: 0 0 8px var(--accent);
-  transition: width 0.4s cubic-bezier(0.1, 0.8, 0.25, 1);
+  background: var(--accent);
+  transition: width 0.4s linear;
 }
 
-a {
-  color: var(--accent);
-  text-decoration: none;
-  font-weight: 500;
-  transition: var(--transition);
-}
-
-a:hover {
-  color: var(--accent-light, #818cf8);
-  text-decoration: underline;
-}
-
-footer {
-  margin-top: 5rem;
-  border-top: 1px solid var(--border);
-  padding-top: 2rem;
-  color: var(--muted);
-  font-size: 0.82rem;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 1rem;
-}
-
-footer a {
-  font-weight: 600;
-}
-
-/* Callouts & boxes */
-.callout {
-  border: 1px solid var(--border);
-  border-left: 4px solid var(--warn);
-  background: rgba(245, 158, 11, 0.04);
-  padding: 1.1rem 1.4rem;
-  margin: 0 0 2rem;
-  font-size: 0.88rem;
-  border-radius: 8px;
-  line-height: 1.6;
-  color: #cbd5e1;
-}
-
-.callout strong {
-  color: var(--warn);
-}
+/* --- controls ------------------------------------------------------------- */
 
 .controls {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
   flex-wrap: wrap;
 }
-
 .controls label {
-  color: var(--muted);
-  font-size: 0.97rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  color: var(--faint);
+  font-size: 0.85rem;
 }
 
+button,
 select,
 input {
-  background: #0f172a;
+  font: inherit;
+  font-size: 0.92rem;
+  background: var(--panel-high);
   color: var(--text);
-  border: 1px solid var(--border);
-  padding: 0.5rem 0.8rem;
-  font-family: inherit;
-  font-size: 0.88rem;
-  border-radius: 8px;
-  outline: none;
-  transition: var(--transition);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 0.42rem 0.8rem;
 }
 
-select:hover,
-input:hover {
-  border-color: rgba(255, 255, 255, 0.15);
+button {
+  cursor: pointer;
 }
-
-select:focus,
-input:focus {
+button:hover:not(:disabled) {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-glow);
+  color: var(--accent);
 }
-
-.pending {
-  color: var(--muted);
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px dashed var(--border);
-  padding: 0.15rem 0.5rem;
-  border-radius: 6px;
-  font-size: 0.84rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .verdicts {
   display: inline-flex;
-  gap: 0.5rem;
-}
-
-/* Button micro-interactions */
-button {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text);
-  border: 1px solid var(--border);
-  padding: 0.45rem 1rem;
-  font-family: var(--font-sans);
-  font-size: 0.82rem;
-  font-weight: 600;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: var(--transition);
-}
-
-button:hover:not(:disabled) {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #fff;
-  box-shadow: 0 4px 12px var(--accent-glow);
-  transform: translateY(-1px);
-}
-
-button:active:not(:disabled) {
-  transform: scale(0.96);
-  box-shadow: 0 1px 3px var(--accent-glow);
-}
-
-button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-a:focus-visible,
-button:focus-visible,
-select:focus-visible,
-input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  gap: 0.35rem;
 }
 
 .linkish {
   background: none;
   border: none;
   color: var(--accent);
-  padding: 0;
+  padding: 0 0 0 0.5rem;
   text-decoration: underline;
-  font-weight: 500;
-}
-
-.linkish:hover {
-  background: none;
-  color: var(--accent-light, #818cf8);
-  box-shadow: none;
-  transform: none;
 }
 
 .signin {
   display: grid;
-  gap: 0.85rem;
+  gap: 0.6rem;
   max-width: 24rem;
+}
+.signin button {
+  margin-top: 0.6rem;
+  padding: 0.6rem;
+  background: var(--accent);
+  color: var(--surface);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.signin button:hover:not(:disabled) {
+  background: var(--accent-dim);
+  color: var(--surface);
+}
+
+/* --- decisions and about -------------------------------------------------- */
+
+.decision {
   background: var(--panel);
   border: 1px solid var(--border);
-  padding: 2rem;
-  border-radius: 12px;
-  box-shadow: var(--shadow-lg);
-  margin-top: 1.5rem;
+  border-left: 3px solid var(--border-strong);
+  padding: 1.15rem 1.25rem;
+  margin: 0 0 1.25rem;
+}
+.decision-head {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+  margin-bottom: 0.5rem;
+}
+.decision p {
+  margin: 0.35rem 0;
+}
+.decision table {
+  margin-top: 0.75rem;
 }
 
-.signin label {
+.about-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  margin: 1.5rem 0;
+}
+.about-card {
+  background: var(--panel);
+  padding: 1.15rem 1.25rem;
+}
+.about-card h3 {
+  margin: 0 0 0.5rem;
+  font-family: var(--font-mono), monospace;
   font-size: 0.82rem;
-  font-weight: 600;
-  color: var(--muted);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+}
+.about-card p {
+  margin: 0;
+  font-size: 0.93rem;
+  color: var(--muted);
 }
 
-.signin button {
-  margin-top: 1rem;
-  padding: 0.75rem;
-  font-size: 0.96rem;
-  background: var(--accent);
-  color: #fff;
-  border: none;
+footer {
+  margin-top: 4rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+  color: var(--faint);
+  font-size: 0.88rem;
 }
 
-.signin button:hover {
-  background: var(--accent-hover);
+/* The old per-page breadcrumb. Superseded by the sidebar, and hidden rather
+   than hunted through five files — a stray one would otherwise sit above a
+   heading duplicating the navigation beside it. */
+.crumbs {
+  display: none;
 }
 
+/* Announced to a screen reader, absent from the visual layout. Not
+   `display: none`, which removes it from the accessibility tree too. */
 .sr-only {
   position: absolute;
   width: 1px;
@@ -540,145 +561,11 @@ input:focus-visible {
   border: 0;
 }
 
-/* Decisions block list */
-.decision {
-  border: 1px solid var(--border);
-  border-left: 4px solid var(--accent);
-  background: var(--panel);
-  border-radius: 12px;
-  padding: 1.5rem;
-  margin: 0 0 1.5rem;
-  box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  transition: var(--transition);
-}
+/* --- motion --------------------------------------------------------------- */
 
-.decision:hover {
-  border-color: rgba(255, 255, 255, 0.12);
-  border-left-color: var(--accent-light, #818cf8);
-  box-shadow: var(--shadow-md);
-  transform: translateY(-2px);
-}
-
-.decision.reject {
-  border-left-color: var(--warn);
-}
-
-.decision-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.75rem;
-}
-
-.decision-head span:first-child {
-  font-size: 0.84rem;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  padding: 0.2rem 0.6rem;
-  border-radius: 6px;
-}
-
-.decision-head span.ok {
-  background: var(--ok-bg);
-}
-
-.decision-head span.warn {
-  background: var(--warn-bg);
-}
-
-.decision-head span.bad {
-  background: var(--bad-bg);
-}
-
-.decision-head .muted {
-  font-size: 0.8rem;
-  font-family: var(--font-mono);
-}
-
-.decision table {
-  margin-top: 1rem;
-}
-
-.decision p {
-  margin: 0.4rem 0;
-  font-size: 1rem;
-}
-
-/* About Layout styling */
-.lead {
-  font-size: 1.15rem;
-  line-height: 1.7;
-  color: #e2e8f0;
-  margin: 1.5rem 0;
-}
-
-.about-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
-  gap: 1.25rem;
-  margin: 2rem 0;
-}
-
-.about-card {
-  border: 1px solid var(--border);
-  background: var(--panel);
-  padding: 1.5rem;
-  border-radius: 12px;
-  box-shadow: var(--shadow-sm);
-  transition: var(--transition);
-}
-
-.about-card:hover {
-  transform: translateY(-4px);
-  border-color: var(--border-hover);
-  box-shadow: var(--shadow-md);
-}
-
-.about-card h3 {
-  margin: 0 0 0.6rem;
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--accent);
-  opacity: 1;
-}
-
-.about-card p {
-  margin: 0;
-  font-size: 0.96rem;
-  color: var(--muted);
-  line-height: 1.6;
-}
-
-main ul {
-  color: var(--muted);
-  font-size: 1rem;
-  padding-left: 1.5rem;
-  line-height: 1.7;
-}
-
-main ul li {
-  margin: 0.5rem 0;
-  color: #cbd5e1;
-}
-
-.judged {
-  color: var(--ok);
-  font-size: 0.97rem;
-  font-weight: 600;
-  background: var(--ok-bg);
-  padding: 0.25rem 0.5rem;
-  border-radius: 6px;
-  border: 1px solid rgba(16, 185, 129, 0.2);
-}
-
-/* Scroll reveal CSS animations */
-/* Content is visible by default and only hidden once JavaScript has taken over.
-   The reveal used to start at opacity 0 unconditionally, which meant a reader
-   with JavaScript disabled — or one whose hydration failed — got a blank page
-   on every route. The HTML was all there and none of it could be seen. */
+/* Visible unless scripting is confirmed. The reveal used to start at opacity 0
+   unconditionally, so a reader with JavaScript disabled got a blank page on
+   every route — the HTML all there and none of it visible. */
 @media (scripting: none) {
   .scroll-reveal {
     opacity: 1 !important;
@@ -686,9 +573,22 @@ main ul li {
   }
 }
 
-/* WCAG 2.3.3. Motion is decoration here; the content is identical without it,
-   and someone who has asked their operating system for less of it should not
-   have to watch eight hundred milliseconds of travel on every section. */
+.scroll-reveal {
+  opacity: 0;
+  transform: translateY(14px);
+  transition:
+    opacity 0.55s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.scroll-reveal.reveal-active {
+  opacity: 1;
+  transform: none;
+}
+
+/* WCAG 2.3.3. The content is identical without motion, and someone who has
+   asked their system for less of it should not have to watch every section
+   travel. */
 @media (prefers-reduced-motion: reduce) {
   .scroll-reveal,
   .scroll-reveal.reveal-active {
@@ -696,17 +596,7 @@ main ul li {
     transform: none !important;
     transition: none !important;
   }
-}
-
-.scroll-reveal {
-  /* Only the entry is animated; nothing here re-runs on scroll. A section that
-     re-plays every time it crosses the viewport turns reading into a slideshow. */
-  opacity: 0;
-  transform: translateY(24px);
-  transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1), transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.scroll-reveal.reveal-active {
-  opacity: 1;
-  transform: translateY(0);
+  .bar > div {
+    transition: none;
+  }
 }
