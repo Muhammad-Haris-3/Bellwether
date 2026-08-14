@@ -1,13 +1,21 @@
 // One place that knows how to talk to the API.
 //
-// Trailing slashes are stripped rather than forbidden: `${base}/queue` with a
-// base ending in "/" produces "//queue", which FastAPI answers with a 404 — a
-// failure that reads as "the API is broken" when the API is fine and the
-// environment variable has one extra character.
-export const API = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").replace(
-  /\/+$/,
-  "",
-);
+// Same origin, always. next.config.ts rewrites /api/* to the real API.
+//
+// The session cookie is the reason. Vercel and Render are different registrable
+// domains, so a cookie set directly by the API is third-party to this page, and
+// Chrome blocks those by default. Sign-in succeeded, the cookie was discarded,
+// and the next request was anonymous — the form returned to itself with no
+// error, because nothing had failed.
+//
+// Going through this origin makes it first-party. It also means the browser
+// never performs a cross-origin request, so CORS stops being involved at all.
+export const API = "/api";
+
+// Whether a destination is configured at all. The rewrite cannot exist without
+// it, and every request would 404 with nothing saying why — so the page checks
+// this and states it, rather than showing an empty queue.
+export const API_CONFIGURED = Boolean(process.env.NEXT_PUBLIC_API_BASE_URL);
 
 // Render's free tier stops the container after a quiet period and the first
 // request afterwards waits for a cold start. Fifty seconds is not unusual, so

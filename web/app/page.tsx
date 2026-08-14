@@ -3,24 +3,12 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// Trailing slashes are stripped rather than forbidden.
-//
-// `${base}/stats` with a base ending in "/" produces "//stats", which FastAPI
-// answers with a 404 — a failure that reads as "the API is broken" when the
-// API is fine and the environment variable has one extra character. Verified
-// against the deployed service: /stats returns 200 and //stats returns 404.
-//
-// The variable is inlined at build time, so getting it wrong costs a redeploy
-// to correct. Accepting both forms is cheaper than documenting one of them.
-const API = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").replace(/\/+$/, "");
-
-// Render's free tier stops the container after a quiet period, and the first
-// request afterwards waits for a cold start. Fifty seconds is not unusual.
-// The loading state is therefore DETERMINATE — a page that shows a spinner for
-// most of a minute with no explanation is indistinguishable from a broken one,
-// and the honest fix is to say what is happening rather than to hide it.
-const COLD_START_HINT_AFTER_SECONDS = 6;
-const COLD_START_BUDGET_SECONDS = 75;
+import {
+  API,
+  API_CONFIGURED,
+  COLD_START_BUDGET_SECONDS,
+  COLD_START_HINT_AFTER_SECONDS,
+} from "../lib/api";
 
 // A job is late once it has missed several scheduled runs, not one. GitHub's
 // cron is best-effort and a single skipped slot is normal (SRS R-5).
@@ -166,7 +154,7 @@ export default function Page() {
     };
   }, [load]);
 
-  if (!API) {
+  if (!API_CONFIGURED) {
     return (
       <main>
         <h1>Bellwether</h1>

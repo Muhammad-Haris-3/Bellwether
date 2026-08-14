@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-  API,
+  API_CONFIGURED,
   ApiError,
   COLD_START_BUDGET_SECONDS,
   COLD_START_HINT_AFTER_SECONDS,
@@ -128,7 +128,7 @@ export default function QueuePage() {
     }
   }
 
-  if (!API) {
+  if (!API_CONFIGURED) {
     return (
       <main>
         <h1>Queue</h1>
