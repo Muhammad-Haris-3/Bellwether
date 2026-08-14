@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ScrollReveal } from "../components/ScrollReveal";
 
 import {
   API_CONFIGURED,
@@ -204,10 +205,14 @@ export default function QueuePage() {
             cold start, and a page with no way out of it reads as broken rather
             than as slow. */}
         <nav className="crumbs">
-          <Link href="/">Status</Link> · <Link href="/timeline">Timeline</Link> ·{" "}
-        <Link href="/metrics">Performance</Link> · <span aria-current="page">Queue</span>
+          <Link href="/">Status</Link>
+          <Link href="/timeline">Timeline</Link>
+          <Link href="/metrics">Performance</Link>
+          <span aria-current="page">Queue</span>
         </nav>
-        <h1>Queue</h1>
+        <ScrollReveal>
+          <h1>Queue</h1>
+        </ScrollReveal>
 
         {/*
           The error goes ABOVE the waiting state, and the waiting state stops
@@ -266,17 +271,21 @@ export default function QueuePage() {
   return (
     <main>
       <nav className="crumbs">
-        <Link href="/">Status</Link> · <Link href="/timeline">Timeline</Link> ·{" "}
-        <Link href="/metrics">Performance</Link> · <span aria-current="page">Queue</span>
+        <Link href="/">Status</Link>
+        <Link href="/timeline">Timeline</Link>
+        <Link href="/metrics">Performance</Link>
+        <span aria-current="page">Queue</span>
       </nav>
 
-      <h1>Triage queue</h1>
-      <p className="tagline">
-        Signed in as {me.email} ({me.role})
-        <button className="linkish" onClick={() => void signOut(loadMe)}>
-          sign out
-        </button>
-      </p>
+      <ScrollReveal>
+        <h1>Triage queue</h1>
+        <p className="tagline">
+          Signed in as {me.email} ({me.role})
+          <button className="linkish" onClick={() => void signOut(loadMe)}>
+            sign out
+          </button>
+        </p>
+      </ScrollReveal>
 
       {/*
         FR-41, stated before the list rather than beside each row alone. A
@@ -284,20 +293,22 @@ export default function QueuePage() {
         what the model expects, not what happened.
       */}
       {queue && (
-        <div className="callout" role="note">
-          <strong>{queue.immature}</strong> of {queue.items.length} items have no
-          outcome yet — an edit is only settled after {queue.maturity_hours}{" "}
-          hours. <strong>The model&rsquo;s score is hidden until you judge.</strong>{" "}
-          An opinion formed after seeing it is agreement with a number rather
-          than a judgement about the edit. Part of this list is drawn at random
-          rather than by risk, and which part is not disclosed — without it,
-          these labels would only ever describe edits the model already flagged.
-          Accuracy is measured on matured predictions only, on the{" "}
-          <Link href="/metrics">performance page</Link>.
-        </div>
+        <ScrollReveal>
+          <div className="callout" role="note">
+            <strong>{queue.immature}</strong> of {queue.items.length} items have no
+            outcome yet — an edit is only settled after {queue.maturity_hours}{" "}
+            hours. <strong>The model&rsquo;s score is hidden until you judge.</strong>{" "}
+            An opinion formed after seeing it is agreement with a number rather
+            than a judgement about the edit. Part of this list is drawn at random
+            rather than by risk, and which part is not disclosed — without it,
+            these labels would only ever describe edits the model already flagged.
+            Accuracy is measured on matured predictions only, on the{" "}
+            <Link href="/metrics">performance page</Link>.
+          </div>
+        </ScrollReveal>
       )}
 
-      <div className="controls">
+      <ScrollReveal className="controls">
         <label htmlFor="window">Window</label>
         <select
           id="window"
@@ -316,7 +327,7 @@ export default function QueuePage() {
           refreshed {lastRefresh ? ago(lastRefresh.toISOString()) : "…"} · polls
           every {POLL_SECONDS}s while this tab is open
         </span>
-      </div>
+      </ScrollReveal>
 
       {error && <p className="bad">{error}</p>}
 
@@ -328,99 +339,103 @@ export default function QueuePage() {
       )}
 
       {queue && queue.items.length > 0 && (
-        <table>
-          <caption className="sr-only">
-            Recent edits ranked by the serving model&rsquo;s predicted revert
-            risk. Each row states whether its outcome is settled.
-          </caption>
-          <thead>
-            <tr>
-              <th scope="col">Score</th>
-              <th scope="col">Page</th>
-              <th scope="col">Editor</th>
-              <th scope="col">When</th>
-              <th scope="col">Outcome</th>
-              <th scope="col">Your call</th>
-            </tr>
-          </thead>
-          <tbody>
-            {queue.items.map((item) => (
-              <tr key={item.revid}>
-                <td>
-                  {item.score === null ? (
-                    <span className="note" title="Shown after you judge">
-                      hidden
-                    </span>
-                  ) : (
-                    <span className={item.score >= 0.5 ? "warn" : "muted"}>
-                      {item.score.toFixed(3)}
-                    </span>
-                  )}
-                </td>
-                <td>
-                  <a
-                    href={`https://en.wikipedia.org/wiki/Special:Diff/${item.revid}`}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                  >
-                    {item.title}
-                  </a>
-                  <div className="note">
-                    {item.byte_delta >= 0 ? "+" : ""}
-                    {item.byte_delta} bytes · rev {item.revid}
-                    {item.comment ? ` · ${item.comment.slice(0, 60)}` : ""}
-                  </div>
-                </td>
-                <td className={item.is_logged_out ? "warn" : "muted"}>
-                  {item.user_name ?? "—"}
-                </td>
-                <td className="muted">{ago(item.event_ts)}</td>
-                <td>
-                  {/*
-                    Null is not false. "Not settled" and "survived" are
-                    different facts, and a queue that showed them the same way
-                    would let a reviewer read an unchecked edit as a confirmed
-                    good one.
-                  */}
-                  {item.reverted === null ? (
-                    <span className="pending">not settled</span>
-                  ) : item.reverted ? (
-                    <span className="bad">reverted</span>
-                  ) : (
-                    <span className="ok">stood</span>
-                  )}
-                </td>
-                <td>
-                  {item.my_verdict ? (
-                    <span className="judged">
-                      you said <strong>{item.my_verdict.replace("_", " ")}</strong>
-                    </span>
-                  ) : me.role === "viewer" ? (
-                    <span className="note">read only</span>
-                  ) : (
-                    <span className="verdicts">
-                      {VERDICTS.map((verdict) => (
-                        <button
-                          key={verdict.key}
-                          disabled={busy === item.revid}
-                          onClick={() => void judge(item.revid, verdict.key, "medium")}
-                          aria-label={`Mark ${item.title} as ${verdict.label}`}
-                        >
-                          {verdict.label}
-                        </button>
-                      ))}
-                    </span>
-                  )}
-                </td>
+        <ScrollReveal>
+          <table>
+            <caption className="sr-only">
+              Recent edits ranked by the serving model&rsquo;s predicted revert
+              risk. Each row states whether its outcome is settled.
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Score</th>
+                <th scope="col">Page</th>
+                <th scope="col">Editor</th>
+                <th scope="col">When</th>
+                <th scope="col">Outcome</th>
+                <th scope="col">Your call</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {queue.items.map((item) => (
+                <tr key={item.revid}>
+                  <td>
+                    {item.score === null ? (
+                      <span className="note" title="Shown after you judge">
+                        hidden
+                      </span>
+                    ) : (
+                      <span className={item.score >= 0.5 ? "warn" : "muted"}>
+                        {item.score.toFixed(3)}
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <a
+                      href={`https://en.wikipedia.org/wiki/Special:Diff/${item.revid}`}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                    >
+                      {item.title}
+                    </a>
+                    <div className="note">
+                      {item.byte_delta >= 0 ? "+" : ""}
+                      {item.byte_delta} bytes · rev {item.revid}
+                      {item.comment ? ` · ${item.comment.slice(0, 60)}` : ""}
+                    </div>
+                  </td>
+                  <td className={item.is_logged_out ? "warn" : "muted"}>
+                    {item.user_name ?? "—"}
+                  </td>
+                  <td className="muted">{ago(item.event_ts)}</td>
+                  <td>
+                    {/*
+                      Null is not false. "Not settled" and "survived" are
+                      different facts, and a queue that showed them the same way
+                      would let a reviewer read an unchecked edit as a confirmed
+                      good one.
+                    */}
+                    {item.reverted === null ? (
+                      <span className="pending">not settled</span>
+                    ) : item.reverted ? (
+                      <span className="bad">reverted</span>
+                    ) : (
+                      <span className="ok">stood</span>
+                    )}
+                  </td>
+                  <td>
+                    {item.my_verdict ? (
+                      <span className="judged">
+                        you said <strong>{item.my_verdict.replace("_", " ")}</strong>
+                      </span>
+                    ) : me.role === "viewer" ? (
+                      <span className="note">read only</span>
+                    ) : (
+                      <span className="verdicts">
+                        {VERDICTS.map((verdict) => (
+                          <button
+                            key={verdict.key}
+                            disabled={busy === item.revid}
+                            onClick={() => void judge(item.revid, verdict.key, "medium")}
+                            aria-label={`Mark ${item.title} as ${verdict.label}`}
+                          >
+                            {verdict.label}
+                          </button>
+                        ))}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </ScrollReveal>
       )}
 
       <footer>
-        <Link href="/">Status</Link> · M6 — the queue. Scores come from the
-        model the decision log promoted.
+        <Link href="/">Status</Link>
+        <span>
+          M6 — the queue. Scores come from the model the decision log promoted.
+        </span>
       </footer>
     </main>
   );
@@ -460,53 +475,62 @@ function SignIn({
   return (
     <main>
       <nav className="crumbs">
-        <Link href="/">Status</Link> · <span aria-current="page">Sign in</span>
+        <Link href="/">Status</Link>
+        <span aria-current="page">Sign in</span>
       </nav>
-      <h1>Sign in</h1>
+      <ScrollReveal>
+        <h1>Sign in</h1>
+      </ScrollReveal>
 
       {!configured ? (
-        <p className="bad">
-          Authentication is not configured on this deployment.
-        </p>
-      ) : (
-        <form onSubmit={submit} className="signin">
-          <label htmlFor="email">Email</label>
-          <input
-            id="email"
-            type="email"
-            autoComplete="username"
-            required
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-          />
-
-          <label htmlFor="password">Password</label>
-          <input
-            id="password"
-            type="password"
-            autoComplete="current-password"
-            required
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-          />
-
-          <button type="submit" disabled={busy}>
-            {busy ? "Checking…" : "Sign in"}
-          </button>
-
-          {/* aria-live, so a screen reader announces a failure that appears
-              without the focus moving. */}
-          <p className="bad" role="alert" aria-live="polite">
-            {error ?? ""}
+        <ScrollReveal>
+          <p className="bad">
+            Authentication is not configured on this deployment.
           </p>
-        </form>
+        </ScrollReveal>
+      ) : (
+        <ScrollReveal>
+          <form onSubmit={submit} className="signin">
+            <label htmlFor="email">Email</label>
+            <input
+              id="email"
+              type="email"
+              autoComplete="username"
+              required
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+            />
+
+            <label htmlFor="password">Password</label>
+            <input
+              id="password"
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+
+            <button type="submit" disabled={busy}>
+              {busy ? "Checking…" : "Sign in"}
+            </button>
+
+            {/* aria-live, so a screen reader announces a failure that appears
+                without the focus moving. */}
+            <p className="bad" role="alert" aria-live="polite">
+              {error ?? ""}
+            </p>
+          </form>
+        </ScrollReveal>
       )}
 
-      <p className="note">
-        There is no sign-up. Accounts are issued by an administrator — the SRS
-        requirement for email sign-in was amended before this was built, because
-        sending email needs a service that costs money or can be withdrawn.
-      </p>
+      <ScrollReveal>
+        <p className="note">
+          There is no sign-up. Accounts are issued by an administrator — the SRS
+          requirement for email sign-in was amended before this was built, because
+          sending email needs a service that costs money or can be withdrawn.
+        </p>
+      </ScrollReveal>
     </main>
   );
 }

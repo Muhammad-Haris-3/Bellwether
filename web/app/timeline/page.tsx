@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { ScrollReveal } from "../components/ScrollReveal";
 
 import {
   API_CONFIGURED,
@@ -131,16 +132,20 @@ export default function TimelinePage() {
   return (
     <main>
       <nav className="crumbs">
-        <Link href="/">Status</Link> · <span aria-current="page">Timeline</span> ·{" "}
-        <Link href="/metrics">Performance</Link> · <Link href="/queue">Queue</Link> ·{" "}
+        <Link href="/">Status</Link>
+        <span aria-current="page">Timeline</span>
+        <Link href="/metrics">Performance</Link>
+        <Link href="/queue">Queue</Link>
         <Link href="/about">About</Link>
       </nav>
 
-      <h1>Model timeline</h1>
-      <p className="tagline">
-        Every promotion, rejection and rollback, with the evidence that produced
-        it. No account required.
-      </p>
+      <ScrollReveal>
+        <h1>Model timeline</h1>
+        <p className="tagline">
+          Every promotion, rejection and rollback, with the evidence that produced
+          it. No account required.
+        </p>
+      </ScrollReveal>
 
       {!data && !error && (
         <div className="loading">
@@ -172,30 +177,35 @@ export default function TimelinePage() {
 
       {data && (
         <>
-          <h2>The rule</h2>
-          <p className="note">
-            Fixed in <code>PREREGISTRATION.md</code> before the first model was
-            trained. A challenger replaces the champion only if all five hold;
-            failing any one it is rejected and the champion stays. The
-            thresholds live in code and are asserted against that document by
-            the test suite, so the two cannot drift apart.
-          </p>
-          <table>
-            <tbody>
-              {RULE.map(([id, text]) => (
-                <tr key={id}>
-                  <td className="muted" style={{ whiteSpace: "nowrap" }}>
-                    {id}
-                  </td>
-                  <td>{text}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <ScrollReveal>
+            <h2>The rule</h2>
+            <p className="note">
+              Fixed in <code>PREREGISTRATION.md</code> before the first model was
+              trained. A challenger replaces the champion only if all five hold;
+              failing any one it is rejected and the champion stays. The
+              thresholds live in code and are asserted against that document by
+              the test suite, so the two cannot drift apart.
+            </p>
+            <table>
+              <tbody>
+                {RULE.map(([id, text]) => (
+                  <tr key={id}>
+                    <td className="muted" style={{ whiteSpace: "nowrap" }}>
+                      {id}
+                    </td>
+                    <td>{text}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </ScrollReveal>
 
-          <h2>Decisions</h2>
+          <ScrollReveal>
+            <h2>Decisions</h2>
+          </ScrollReveal>
+
           {data.decisions.length === 0 ? (
-            <>
+            <ScrollReveal>
               {/*
                 An empty log is a real state and says something. It is not a
                 page that failed to load, and it is not a system that has never
@@ -214,10 +224,10 @@ export default function TimelinePage() {
                 first challenger appears. The evaluations below are the record
                 of that being checked, daily, including the days nothing fired.
               </p>
-            </>
+            </ScrollReveal>
           ) : (
             data.decisions.map((decision) => (
-              <div key={decision.decision_id} className="decision">
+              <ScrollReveal key={decision.decision_id} className="decision">
                 <div className="decision-head">
                   <span className={decision.decision === "reject" ? "warn" : "ok"}>
                     {decision.decision.toUpperCase()}
@@ -264,120 +274,129 @@ export default function TimelinePage() {
                     ))}
                   </tbody>
                 </table>
-              </div>
+              </ScrollReveal>
             ))
           )}
 
-          <h2>Serving</h2>
-          <p>
-            {data.serving ? (
-              <>
-                <code>{data.serving}</code>
-              </>
+          <ScrollReveal>
+            <h2>Serving</h2>
+            <p>
+              {data.serving ? (
+                <>
+                  <code>{data.serving}</code>
+                </>
+              ) : (
+                <span className="muted">
+                  No promotion has happened, so the newest registered model is
+                  serving by fallback.
+                </span>
+              )}
+            </p>
+          </ScrollReveal>
+
+          <ScrollReveal>
+            <h2>Retrain checks</h2>
+            {data.recent_trigger_evaluations.length === 0 ? (
+              <p className="muted">
+                No evaluation recorded yet. The check runs daily.
+              </p>
             ) : (
-              <span className="muted">
-                No promotion has happened, so the newest registered model is
-                serving by fallback.
-              </span>
+              <table>
+                <caption className="sr-only">
+                  Daily evaluations of the three pre-registered retrain triggers,
+                  including the days on which none fired.
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Day</th>
+                    <th scope="col">Matured</th>
+                    <th scope="col">Rolling PR-AUC</th>
+                    <th scope="col">Baseline</th>
+                    <th scope="col">Worst PSI</th>
+                    <th scope="col">Since training</th>
+                    <th scope="col">Fired</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.recent_trigger_evaluations.map((row) => (
+                    <tr key={row.day}>
+                      <td className="muted">{row.day}</td>
+                      {/* The denominator beside the dash. Without it a row of
+                          em-dashes reads as a broken job rather than as a window
+                          holding nothing yet to measure. */}
+                      <td className="muted">{row.n_matured.toLocaleString()}</td>
+                      <td>{row.rolling_pr_auc ?? "—"}</td>
+                      <td className="muted">{row.baseline_pr_auc ?? "—"}</td>
+                      <td>
+                        {row.worst_psi ?? "—"}
+                        {row.worst_psi_feature && (
+                          <span className="note"> {row.worst_psi_feature}</span>
+                        )}
+                      </td>
+                      <td className="muted">
+                        {row.days_since_train === null ? "—" : `${row.days_since_train} d`}
+                      </td>
+                      <td className={row.fired ? "warn" : "muted"}>
+                        {row.fired ? row.reason : "no"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             )}
-          </p>
-
-          <h2>Retrain checks</h2>
-          {data.recent_trigger_evaluations.length === 0 ? (
-            <p className="muted">
-              No evaluation recorded yet. The check runs daily.
+            <p className="note">
+              A row of dashes is not a failed check. The rolling figure is computed
+              over predictions that have matured, and maturity is seven days — so
+              until the register is that old there is nothing to measure and the
+              matured count says so.
             </p>
-          ) : (
-            <table>
-              <caption className="sr-only">
-                Daily evaluations of the three pre-registered retrain triggers,
-                including the days on which none fired.
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col">Day</th>
-                  <th scope="col">Matured</th>
-                  <th scope="col">Rolling PR-AUC</th>
-                  <th scope="col">Baseline</th>
-                  <th scope="col">Worst PSI</th>
-                  <th scope="col">Since training</th>
-                  <th scope="col">Fired</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.recent_trigger_evaluations.map((row) => (
-                  <tr key={row.day}>
-                    <td className="muted">{row.day}</td>
-                    {/* The denominator beside the dash. Without it a row of
-                        em-dashes reads as a broken job rather than as a window
-                        holding nothing yet to measure. */}
-                    <td className="muted">{row.n_matured.toLocaleString()}</td>
-                    <td>{row.rolling_pr_auc ?? "—"}</td>
-                    <td className="muted">{row.baseline_pr_auc ?? "—"}</td>
-                    <td>
-                      {row.worst_psi ?? "—"}
-                      {row.worst_psi_feature && (
-                        <span className="note"> {row.worst_psi_feature}</span>
-                      )}
-                    </td>
-                    <td className="muted">
-                      {row.days_since_train === null ? "—" : `${row.days_since_train} d`}
-                    </td>
-                    <td className={row.fired ? "warn" : "muted"}>
-                      {row.fired ? row.reason : "no"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-          <p className="note">
-            A row of dashes is not a failed check. The rolling figure is computed
-            over predictions that have matured, and maturity is seven days — so
-            until the register is that old there is nothing to measure and the
-            matured count says so.
-          </p>
-          <p className="note">
-            Every evaluation is recorded, including the ones that fire nothing. A
-            table holding only the firings could not answer &ldquo;was this
-            checked yesterday&rdquo;, and a trigger that silently stopped being
-            evaluated would look exactly like one that keeps not firing.
-          </p>
-
-          <h2>What has served</h2>
-          {data.champion_history.length === 0 ? (
-            <p className="muted">
-              Nothing has been promoted, so there is no history to show.
+            <p className="note">
+              Every evaluation is recorded, including the ones that fire nothing. A
+              table holding only the firings could not answer &ldquo;was this
+              checked yesterday&rdquo;, and a trigger that silently stopped being
+              evaluated would look exactly like one that keeps not firing.
             </p>
-          ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">Model</th>
-                  <th scope="col">From</th>
-                  <th scope="col">Replaced</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.champion_history.map((row) => (
-                  <tr key={`${row.model_version}-${row.effective_from}`}>
-                    <td>
-                      <code>{row.model_version}</code>
-                    </td>
-                    <td className="muted">{when(row.effective_from)}</td>
-                    <td className="muted">{row.replaced ?? "—"}</td>
+          </ScrollReveal>
+
+          <ScrollReveal>
+            <h2>What has served</h2>
+            {data.champion_history.length === 0 ? (
+              <p className="muted">
+                Nothing has been promoted, so there is no history to show.
+              </p>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Model</th>
+                    <th scope="col">From</th>
+                    <th scope="col">Replaced</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+                </thead>
+                <tbody>
+                  {data.champion_history.map((row) => (
+                    <tr key={`${row.model_version}-${row.effective_from}`}>
+                      <td>
+                        <code>{row.model_version}</code>
+                      </td>
+                      <td className="muted">{when(row.effective_from)}</td>
+                      <td className="muted">{row.replaced ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </ScrollReveal>
         </>
       )}
 
       <footer>
-        <Link href="/">Status</Link> · <Link href="/queue">Queue</Link> · Rejections
-        are shown as prominently as promotions; a log holding only the changes
-        cannot answer what was refused.
+        <Link href="/">Status</Link>
+        <span>
+          <Link href="/queue">Queue</Link> · Rejections
+          are shown as prominently as promotions; a log holding only the changes
+          cannot answer what was refused.
+        </span>
       </footer>
     </main>
   );

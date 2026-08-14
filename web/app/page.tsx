@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ScrollReveal } from "./components/ScrollReveal";
 
 import {
   API,
@@ -176,15 +177,19 @@ export default function Page() {
   return (
     <main>
       <nav className="crumbs">
-        <span aria-current="page">Status</span> ·{" "}
-        <Link href="/timeline">Timeline</Link> · <Link href="/metrics">Performance</Link> ·{" "}
-        <Link href="/queue">Queue</Link> · <Link href="/about">About</Link>
+        <span aria-current="page">Status</span>
+        <Link href="/timeline">Timeline</Link>
+        <Link href="/metrics">Performance</Link>
+        <Link href="/queue">Queue</Link>
+        <Link href="/about">About</Link>
       </nav>
 
-      <h1>Bellwether</h1>
-      <p className="tagline">
-        A model that notices it is getting worse, and replaces itself.
-      </p>
+      <ScrollReveal>
+        <h1>Bellwether</h1>
+        <p className="tagline">
+          A model that notices it is getting worse, and replaces itself.
+        </p>
+      </ScrollReveal>
 
       {!stats && !error && (
         <div className="loading">
@@ -220,94 +225,98 @@ export default function Page() {
 
       {stats && totals && (
         <>
-          <h2>Ingested</h2>
-          <div className="grid">
-            <div className="card">
-              <div className="value">{totals.events.toLocaleString()}</div>
-              <div className="label">edits</div>
-            </div>
-            <div className="card">
-              <div className="value">
-                {totals.events_logged_out.toLocaleString()}
+          <ScrollReveal>
+            <h2>Ingested</h2>
+            <div className="grid">
+              <div className="card">
+                <div className="value">{totals.events.toLocaleString()}</div>
+                <div className="label">edits</div>
               </div>
-              <div className="label">logged out</div>
-            </div>
-            <div className="card">
-              <div className="value">{totals.label_checks.toLocaleString()}</div>
-              <div className="label">outcome checks</div>
-            </div>
-            <div className="card">
-              <div className="value">{totals.labels.toLocaleString()}</div>
-              <div className="label">labels</div>
-            </div>
-            <div className="card">
-              <div className="value">
-                {totals.revert_events.toLocaleString()}
+              <div className="card">
+                <div className="value">
+                  {totals.events_logged_out.toLocaleString()}
+                </div>
+                <div className="label">logged out</div>
               </div>
-              <div className="label">reverts seen</div>
+              <div className="card">
+                <div className="value">{totals.label_checks.toLocaleString()}</div>
+                <div className="label">outcome checks</div>
+              </div>
+              <div className="card">
+                <div className="value">{totals.labels.toLocaleString()}</div>
+                <div className="label">labels</div>
+              </div>
+              <div className="card">
+                <div className="value">
+                  {totals.revert_events.toLocaleString()}
+                </div>
+                <div className="label">reverts seen</div>
+              </div>
             </div>
-          </div>
-          <p className="note">
-            {overallRate !== null && (
-              <>
-                {overallRate.toFixed(2)}% of ingested edits already carried a
-                revert tag when we first saw them. A floor, not a rate — the
-                tag array is frozen at ingestion, so for a live edit it cannot
-                yet know about a revert that has not happened.
-              </>
-            )}
-          </p>
-
-          <h2>Revert rate, matured 48h+</h2>
-          {stats.mature_48h.length === 0 ? (
-            <p className="muted">
-              Nothing has matured yet. Rates appear once edits are 48 hours old.
+            <p className="note">
+              {overallRate !== null && (
+                <>
+                  {overallRate.toFixed(2)}% of ingested edits already carried a
+                  revert tag when we first saw them. A floor, not a rate — the
+                  tag array is frozen at ingestion, so for a live edit it cannot
+                  yet know about a revert that has not happened.
+                </>
+              )}
             </p>
-          ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Editor</th>
-                  <th>Sample</th>
-                  <th>Reverted</th>
-                  <th>Rate</th>
-                  <th>Population</th>
-                  <th>Weighted rate</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stats.mature_48h.map((row) => (
-                  <tr key={row.stratum}>
-                    <td>{row.stratum.replace("_", " ")}</td>
-                    <td>{row.n.toLocaleString()}</td>
-                    <td>{row.reverted.toLocaleString()}</td>
-                    <td>
-                      {row.rate === null
-                        ? "—"
-                        : `${(row.rate * 100).toFixed(2)}%`}
-                    </td>
-                    <td className="muted">
-                      {row.weighted_n.toLocaleString()}
-                    </td>
-                    <td>
-                      {row.weighted_rate === null
-                        ? "—"
-                        : `${(row.weighted_rate * 100).toFixed(2)}%`}
-                    </td>
+          </ScrollReveal>
+
+          <ScrollReveal>
+            <h2>Revert rate, matured 48h+</h2>
+            {stats.mature_48h.length === 0 ? (
+              <p className="muted">
+                Nothing has matured yet. Rates appear once edits are 48 hours old.
+              </p>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Editor</th>
+                    <th>Sample</th>
+                    <th>Reverted</th>
+                    <th>Rate</th>
+                    <th>Population</th>
+                    <th>Weighted rate</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-          <p className="note">
-            Every rate carries its sample size and the maturity it was measured
-            at. A revert rate without a maturity is a lower bound, not a rate.
-          </p>
-          <p className="note">
-            Logged-out edits are sampled at 50% and registered ones at 3%, so
-            the sample is not the population. Both rates are shown — publishing
-            only one would mean choosing which.
-          </p>
+                </thead>
+                <tbody>
+                  {stats.mature_48h.map((row) => (
+                    <tr key={row.stratum}>
+                      <td>{row.stratum.replace("_", " ")}</td>
+                      <td>{row.n.toLocaleString()}</td>
+                      <td>{row.reverted.toLocaleString()}</td>
+                      <td>
+                        {row.rate === null
+                          ? "—"
+                          : `${(row.rate * 100).toFixed(2)}%`}
+                      </td>
+                      <td className="muted">
+                        {row.weighted_n.toLocaleString()}
+                      </td>
+                      <td>
+                        {row.weighted_rate === null
+                          ? "—"
+                          : `${(row.weighted_rate * 100).toFixed(2)}%`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <p className="note">
+              Every rate carries its sample size and the maturity it was measured
+              at. A revert rate without a maturity is a lower bound, not a rate.
+            </p>
+            <p className="note">
+              Logged-out edits are sampled at 50% and registered ones at 3%, so
+              the sample is not the population. Both rates are shown — publishing
+              only one would mean choosing which.
+            </p>
+          </ScrollReveal>
 
           {/*
             M4-FR-24. Two PR-AUC figures exist and they measure DIFFERENT
@@ -316,173 +325,181 @@ export default function Page() {
             separate columns, and the note under them says it in words rather
             than leaving it to be inferred from a heading.
           */}
-          <h2>How good is it?</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Measurement</th>
-                <th>PR-AUC</th>
-                <th>vs logged-out</th>
-                <th>Sample</th>
-                <th>Matured at</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>
-                  Backtest <span className="muted">(offline, backfilled)</span>
-                </td>
-                <td>{kc2 ? pct(kc2.pr_auc.model) : "—"}</td>
-                <td>{kc2 ? `+${pct(kc2.margin)}` : "—"}</td>
-                <td>{kc2 ? kc2.n_events.toLocaleString() : "—"}</td>
-                <td className="muted">
-                  {kc2 ? `${kc2.maturity_hours}h` : "—"}
-                  {kc2?.provisional && " · provisional"}
-                </td>
-              </tr>
-              {["all", "maturity_cohort"].map((population) => {
-                const block = metrics?.populations?.[population];
-                const window = block?.windows?.["all"];
-                const agg = window?.aggregate;
-                return (
-                  <tr key={population}>
-                    <td>
-                      Live{" "}
-                      <span className="muted">
-                        {population === "all"
-                          ? "(register, all events)"
-                          : "(register, maturity cohort)"}
-                      </span>
-                    </td>
-                    <td>
-                      {agg?.pr_auc == null ? (
-                        <span className="muted">not yet</span>
-                      ) : (
-                        <>
-                          {pct(agg.pr_auc)}{" "}
-                          <span className="muted">
-                            [{pct(agg.pr_auc_ci[0])}, {pct(agg.pr_auc_ci[1])}]
-                          </span>
-                        </>
-                      )}
-                    </td>
-                    <td>{agg?.margin == null ? "—" : pct(agg.margin)}</td>
-                    <td>
-                      {agg ? agg.n.toLocaleString() : "—"}
-                      {agg && agg.n > 0 && (
-                        <span className="muted"> · {agg.n_positives} pos</span>
-                      )}
-                    </td>
-                    <td className="muted">
-                      {block ? `${block.maturity_hours}h` : "—"}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          <p className="note">
-            These are not the same measurement and the higher one is not the
-            answer. The backtest scores a backfilled census whose labels were
-            harvested at leisure, with folds trained on data adjacent to what
-            they score. The live rows grade forecasts written to an append-only
-            register <em>before the outcome existed</em>, on a different
-            population, under a scoring lag. Where they disagree, the live one
-            is true.
-          </p>
-          <p className="note">
-            The two live rows are also not interchangeable. The maturity cohort
-            is the tenth of events the labeller checks densely enough to grade
-            at 48 hours; everything else waits for its seven-day check. The
-            cohort figure arrives first over far fewer events.
-          </p>
-          {metrics?.populations?.all?.windows?.["all"] && (
+          <ScrollReveal>
+            <h2>How good is it?</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th>Measurement</th>
+                  <th>PR-AUC</th>
+                  <th>vs logged-out</th>
+                  <th>Sample</th>
+                  <th>Matured at</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    Backtest <span className="muted">(offline, backfilled)</span>
+                  </td>
+                  <td>{kc2 ? pct(kc2.pr_auc.model) : "—"}</td>
+                  <td>{kc2 ? `+${pct(kc2.margin)}` : "—"}</td>
+                  <td>{kc2 ? kc2.n_events.toLocaleString() : "—"}</td>
+                  <td className="muted">
+                    {kc2 ? `${kc2.maturity_hours}h` : "—"}
+                    {kc2?.provisional && " · provisional"}
+                  </td>
+                </tr>
+                {["all", "maturity_cohort"].map((population) => {
+                  const block = metrics?.populations?.[population];
+                  const window = block?.windows?.["all"];
+                  const agg = window?.aggregate;
+                  return (
+                    <tr key={population}>
+                      <td>
+                        Live{" "}
+                        <span className="muted">
+                          {population === "all"
+                            ? "(register, all events)"
+                            : "(register, maturity cohort)"}
+                        </span>
+                      </td>
+                      <td>
+                        {agg?.pr_auc == null ? (
+                          <span className="muted">not yet</span>
+                        ) : (
+                          <>
+                            {pct(agg.pr_auc)}{" "}
+                            <span className="muted">
+                              [{pct(agg.pr_auc_ci[0])}, {pct(agg.pr_auc_ci[1])}]
+                            </span>
+                          </>
+                        )}
+                      </td>
+                      <td>{agg?.margin == null ? "—" : pct(agg.margin)}</td>
+                      <td>
+                        {agg ? agg.n.toLocaleString() : "—"}
+                        {agg && agg.n > 0 && (
+                          <span className="muted"> · {agg.n_positives} pos</span>
+                        )}
+                      </td>
+                      <td className="muted">
+                        {block ? `${block.maturity_hours}h` : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
             <p className="note">
-              Excluded from the live figures:{" "}
-              {metrics.populations.all.windows["all"].excluded.immature.toLocaleString()}{" "}
-              not yet matured, and{" "}
-              {metrics.populations.all.windows["all"].excluded.late.toLocaleString()}{" "}
-              scored after their own outcome was already visible. The second
-              exclusion is correct and is not neutral — those edits were
-              reverted fast, so dropping them removes real positives, which is
-              why their own base rate is published beside the count.
+              These are not the same measurement and the higher one is not the
+              answer. The backtest scores a backfilled census whose labels were
+              harvested at leisure, with folds trained on data adjacent to what
+              they score. The live rows grade forecasts written to an append-only
+              register <em>before the outcome existed</em>, on a different
+              population, under a scoring lag. Where they disagree, the live one
+              is true.
             </p>
-          )}
+            <p className="note">
+              The two live rows are also not interchangeable. The maturity cohort
+              is the tenth of events the labeller checks densely enough to grade
+              at 48 hours; everything else waits for its seven-day check. The
+              cohort figure arrives first over far fewer events.
+            </p>
+            {metrics?.populations?.all?.windows?.["all"] && (
+              <p className="note">
+                Excluded from the live figures:{" "}
+                {metrics.populations.all.windows["all"].excluded.immature.toLocaleString()}{" "}
+                not yet matured, and{" "}
+                {metrics.populations.all.windows["all"].excluded.late.toLocaleString()}{" "}
+                scored after their own outcome was already visible. The second
+                exclusion is correct and is not neutral — those edits were
+                reverted fast, so dropping them removes real positives, which is
+                why their own base rate is published beside the count.
+              </p>
+            )}
+          </ScrollReveal>
 
-          <h3>Against Wikimedia&rsquo;s own model</h3>
-          {(() => {
-            const paired =
-              metrics?.populations?.all?.windows?.["all"]?.aggregate?.liftwing;
-            const attempt = metrics?.liftwing_last_attempt;
-            if (paired?.margin != null) {
+          <ScrollReveal>
+            <h3>Against Wikimedia&rsquo;s own model</h3>
+            {(() => {
+              const paired =
+                metrics?.populations?.all?.windows?.["all"]?.aggregate?.liftwing;
+              const attempt = metrics?.liftwing_last_attempt;
+              if (paired?.margin != null) {
+                return (
+                  <p>
+                    Bellwether {pct(paired.model_pr_auc_on_paired)} against Lift
+                    Wing {pct(paired.liftwing_pr_auc)} on {paired.n} events both
+                    models scored — a margin of {pct(paired.margin)}.
+                  </p>
+                );
+              }
               return (
-                <p>
-                  Bellwether {pct(paired.model_pr_auc_on_paired)} against Lift
-                  Wing {pct(paired.liftwing_pr_auc)} on {paired.n} events both
-                  models scored — a margin of {pct(paired.margin)}.
+                <p className="muted">
+                  No comparison yet
+                  {paired ? ` — ${paired.n} paired events so far` : ""}.
+                  {attempt &&
+                    ` Last fetch: ${attempt.fetched} of ${attempt.requested} (${attempt.status}).`}
                 </p>
               );
-            }
-            return (
-              <p className="muted">
-                No comparison yet
-                {paired ? ` — ${paired.n} paired events so far` : ""}.
-                {attempt &&
-                  ` Last fetch: ${attempt.fetched} of ${attempt.requested} (${attempt.status}).`}
-              </p>
-            );
-          })()}
-          <p className="note">
-            Wikimedia runs <code>revertrisk-language-agnostic</code> in
-            production against the same edits. The SRS recorded, before any
-            model here existed, that it is expected to win — and the comparison
-            is published whichever way it falls. It is paired on the events both
-            models scored, which is why the Bellwether figure quoted here is not
-            the one in the table above.
-          </p>
+            })()}
+            <p className="note">
+              Wikimedia runs <code>revertrisk-language-agnostic</code> in
+              production against the same edits. The SRS recorded, before any
+              model here existed, that it is expected to win — and the comparison
+              is published whichever way it falls. It is paired on the events both
+              models scored, which is why the Bellwether figure quoted here is not
+              the one in the table above.
+            </p>
+          </ScrollReveal>
 
-          <h2>Pipeline</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Job</th>
-                <th>Last run</th>
-                <th>Outcome</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stats.runs.map((run) => {
-                const f = freshness(run.job, run.minutes_ago);
-                return (
-                  <tr key={run.job}>
-                    <td>{run.job}</td>
-                    <td className={f.cls}>{f.text}</td>
-                    {/*
-                      "partial" is a defined, healthy outcome — the labelling
-                      job reports it when some revisions have been deleted and
-                      cannot be labelled either way. Colouring anything that is
-                      not "success" as a failure turned a normal condition into
-                      a red alarm, which is the fastest way to teach someone to
-                      ignore the colour.
-                    */}
-                    <td className={statusClass(run.status)}>{run.status}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          <p className="note">
-            Staleness is stated rather than implied. Counts with no indication
-            of when they last changed look identical to counts that stopped
-            changing days ago.
-          </p>
+          <ScrollReveal>
+            <h2>Pipeline</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th>Job</th>
+                  <th>Last run</th>
+                  <th>Outcome</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.runs.map((run) => {
+                  const f = freshness(run.job, run.minutes_ago);
+                  return (
+                    <tr key={run.job}>
+                      <td>{run.job}</td>
+                      <td className={f.cls}>{f.text}</td>
+                      {/*
+                        "partial" is a defined, healthy outcome — the labelling
+                        job reports it when some revisions have been deleted and
+                        cannot be labelled either way. Colouring anything that is
+                        not "success" as a failure turned a normal condition into
+                        a red alarm, which is the fastest way to teach someone to
+                        ignore the colour.
+                      */}
+                      <td className={statusClass(run.status)}>{run.status}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <p className="note">
+              Staleness is stated rather than implied. Counts with no indication
+              of when they last changed look identical to counts that stopped
+              changing days ago.
+            </p>
+          </ScrollReveal>
         </>
       )}
 
       <footer>
-        <a href="https://github.com/Muhammad-Haris-3/Bellwether">Source</a> ·
-        M6 — the queue is live. Every figure here is provisional while the
-        maturity window is a placeholder.
+        <a href="https://github.com/Muhammad-Haris-3/Bellwether">Source</a>
+        <span>
+          M6 — the queue is live. Every figure here is provisional while the
+          maturity window is a placeholder.
+        </span>
       </footer>
     </main>
   );
