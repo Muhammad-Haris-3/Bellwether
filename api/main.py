@@ -251,10 +251,29 @@ SELECT g.checkpoint_seconds,
 
 
 def _schema_state(conn: psycopg.Connection[Any]) -> dict[str, bool]:
+    """One probe per migration, and one failing probe reports one false.
+
+    The first version let an exception escape, which took the whole endpoint
+    with it: `to_regclass` needs USAGE on the schema it names, migration 022
+    added a schema the serving role could not see, and /health answered
+    `database_reachable: false` with an empty map on a database where all
+    twenty-three migrations were applied and every job was running.
+
+    A health check that goes dark because one probe raised is worse than one
+    reporting a single false — the first says nothing is working, and the
+    second says exactly what is not.
+    """
     state: dict[str, bool] = {}
     for name, sql in SCHEMA_EXPECTATIONS.items():
-        row = conn.execute(sql).fetchone()  # type: ignore[arg-type]
-        state[name] = bool(row and row["present"])
+        try:
+            row = conn.execute(sql).fetchone()  # type: ignore[arg-type]
+            state[name] = bool(row and row["present"])
+        except psycopg.Error:
+            # The transaction is aborted after an error; without this every
+            # later probe would fail too and the map would be false from here
+            # down, blaming migrations that are fine.
+            conn.rollback()
+            state[name] = False
     return state
 
 

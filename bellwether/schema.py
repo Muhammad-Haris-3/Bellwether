@@ -54,6 +54,10 @@ SCHEMA_EXPECTATIONS = {
     "015_m3_reproducibility": (
         "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
     ),
+    "024_m6_schema_usage": (
+        "SELECT has_schema_privilege('bellwether_readonly', 'app', 'USAGE')"
+        "   AND has_table_privilege('bellwether_writer', 'app.sessions', 'DELETE') AS present"
+    ),
     "023_m6_auth_lookups": (
         "SELECT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace"
         "                WHERE n.nspname = 'app' AND p.proname = 'credentials_for')"
@@ -138,11 +142,23 @@ SCHEMA_EXPECTATIONS = {
 
 
 def missing(conn: Any) -> list[str]:
-    """Migrations this code expects that the database does not have."""
+    """Migrations this code expects that the database does not have.
+
+    A probe that cannot run counts as missing rather than raising. Some of
+    these need a privilege the caller may lack — `to_regclass` requires USAGE
+    on the schema it names — and a probe that raises would replace a precise
+    answer with a traceback about permissions, which is exactly what this
+    module exists to avoid.
+    """
     absent = []
     for name, sql in SCHEMA_EXPECTATIONS.items():
-        row = conn.execute(sql).fetchone()
-        if not (row and row["present"]):
+        try:
+            row = conn.execute(sql).fetchone()
+            present = bool(row and row["present"])
+        except Exception:  # noqa: BLE001 - unrunnable is indistinguishable from absent here
+            conn.rollback()
+            present = False
+        if not present:
             absent.append(name)
     return sorted(absent)
 

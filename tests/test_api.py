@@ -379,3 +379,30 @@ def test_every_column_stats_queries_is_actually_served(client: TestClient, fresh
     aliases = set(re.findall(r"AS\s+(\w+)", STATS_SQL))
     served = set(client.get("/stats").json()["totals"])
     assert aliases <= served, f"queried but never served: {sorted(aliases - served)}"
+
+
+@pytest.mark.db
+def test_one_unreadable_probe_does_not_blank_the_whole_health_map(
+    client: TestClient, fresh_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failure that took /health down entirely.
+
+    to_regclass needs USAGE on the schema it names. Migration 022 added a schema
+    the serving role could not see, the probe raised, and the endpoint answered
+    `database_reachable: false` with an empty map on a database where every
+    migration was applied and every job was running.
+
+    A health check that goes dark because one probe raised says nothing is
+    working. One reporting a single false says exactly what is not.
+    """
+    from bellwether import schema
+
+    monkeypatch.setitem(
+        schema.SCHEMA_EXPECTATIONS, "999_unreadable", "SELECT * FROM a_table_that_is_not_there"
+    )
+
+    body = client.get("/health").json()
+    assert body["database_reachable"] is True
+    assert body["schema"]["999_unreadable"] is False
+    assert body["schema"]["001_schema"] is True, "a later probe must not inherit the failure"
+    assert body["schema_behind"] == ["999_unreadable"]
