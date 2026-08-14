@@ -25,6 +25,7 @@ SCHEDULED = {
     "liftwing.yml": "41 7 * * *",
     "triggers.yml": "31 6 * * *",
     "decide.yml": "13 8 * * *",
+    "agreement.yml": "27 9 * * *",
 }
 
 

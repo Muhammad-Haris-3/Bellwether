@@ -1211,3 +1211,71 @@ def metrics_history(population: str = "all", window: str = "7d", limit: int = 60
             "window rather than about the model."
         ),
     }
+
+
+# --- M7: how good the proxy is (BQ-8) --------------------------------------
+
+# The latest run of each slice/policy combination.
+#
+# Public and unauthenticated, like every other finding here. This one measures
+# the assumption underneath all of them — every label in this system says "was
+# reverted" and every figure treats that as "was bad" — so it would be a strange
+# thing to keep behind a login.
+AGREEMENT_SQL = """
+SELECT DISTINCT ON (queue_slice, unsure_policy)
+       queue_slice, unsure_policy, computed_at, n, n_reviewers, n_unsure,
+       unsure_rate, both_positive, human_only, proxy_only, both_negative,
+       kappa, observed_agreement, expected_agreement, refused_reason,
+       maturity_hours
+  FROM outcome.label_agreement
+ ORDER BY queue_slice, unsure_policy, computed_at DESC
+"""
+
+
+@app.get("/agreement")
+def agreement_view() -> dict[str, Any]:
+    """How good a proxy "was reverted" is for "was a bad edit" (SRS FR-49).
+
+    Reported per slice and per `unsure` treatment, because those are different
+    estimates of different things and pooling them would produce one number that
+    answers none of the questions.
+    """
+    with _connect() as conn:
+        rows = conn.execute(AGREEMENT_SQL).fetchall()
+
+    return {
+        "computed": bool(rows),
+        "estimates": [
+            {
+                "slice": row["queue_slice"],
+                "unsure_policy": row["unsure_policy"],
+                "computed_at": row["computed_at"],
+                "n": row["n"],
+                "n_reviewers": row["n_reviewers"],
+                "n_unsure": row["n_unsure"],
+                "unsure_rate": row["unsure_rate"],
+                "confusion": {
+                    "human_bad_proxy_reverted": row["both_positive"],
+                    "human_bad_proxy_kept": row["human_only"],
+                    "human_good_proxy_reverted": row["proxy_only"],
+                    "human_good_proxy_kept": row["both_negative"],
+                },
+                "kappa": row["kappa"],
+                "observed_agreement": row["observed_agreement"],
+                "expected_agreement": row["expected_agreement"],
+                "refused_reason": row["refused_reason"],
+                "maturity_hours": row["maturity_hours"],
+            }
+            for row in rows
+        ],
+        "note": (
+            "Every label in this system says 'was reverted', and every figure "
+            "treats that as 'was bad'. This measures the substitution. The "
+            "`random` slice is the only estimate that answers the question: a "
+            "figure over the `ranked` slice measures agreement among edits the "
+            "model already flagged. `unsure` is reported under both treatments "
+            "rather than dropped, because those are the ambiguous cases and "
+            "dropping them selects on the very thing being studied. A null "
+            "kappa with a refused_reason is a measurement, not a gap."
+        ),
+    }

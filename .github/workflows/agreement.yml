@@ -1,0 +1,56 @@
+name: Agreement
+
+# Daily. Measures how good a proxy "was reverted" is for "was a bad edit" —
+# the assumption every figure in this project rests on (BQ-8, SRS FR-49).
+#
+# It will refuse to publish a kappa for a long time, and that refusal is the
+# point: it is recorded with the reason, so "we have not measured this" and "we
+# measured it and there was not enough data" stay distinguishable.
+on:
+  schedule:
+    - cron: "27 9 * * *"
+  workflow_dispatch:
+    inputs:
+      maturity_hours:
+        description: "Maturity window in hours (blank = the 7-day default)"
+        required: false
+
+concurrency:
+  group: agreement
+  cancel-in-progress: false
+
+jobs:
+  agreement:
+    name: Measure the proxy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      BELLWETHER_DATABASE_URL: ${{ secrets.BELLWETHER_DATABASE_URL }}
+      BELLWETHER_ENV: production
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements-pipeline.txt
+
+      - name: Measure
+        run: |
+          set -o pipefail
+          python -m bellwether.agreement \
+            ${{ inputs.maturity_hours && format('--maturity-hours {0}', inputs.maturity_hours) || '' }} 2>&1 \
+            | tee agreement-output.txt
+
+      - name: Surface the failure
+        if: failure()
+        run: |
+          DETAIL=$(tail -40 agreement-output.txt 2>/dev/null \
+            | sed 's/%/%25/g; s/\r//g' \
+            | awk '{printf "%s%%0A", $0}')
+          echo "::error title=agreement failed::$DETAIL"
