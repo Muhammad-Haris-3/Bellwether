@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from api import sessions
-from bellwether import metrics
+from bellwether import maturity
 
 router = APIRouter()
 
@@ -157,7 +157,7 @@ def queue(
     with sessions.acting_connection(user) as conn:
         rows = conn.execute(
             QUEUE_SQL,
-            {"maturity": metrics.PROVISIONAL_MATURITY_SECONDS, "hours": hours, "limit": limit},
+            {"maturity": maturity.PROVISIONAL_MATURITY_SECONDS, "hours": hours, "limit": limit},
         ).fetchall()
         freshness = conn.execute(FRESHNESS_SQL, {"hours": hours}).fetchone() or {}
 
@@ -190,7 +190,7 @@ def queue(
         "window_hours": hours,
         "matured": sum(1 for i in items if i["matured"]),
         "immature": sum(1 for i in items if not i["matured"]),
-        "maturity_hours": metrics.PROVISIONAL_MATURITY_SECONDS // 3600,
+        "maturity_hours": maturity.PROVISIONAL_MATURITY_SECONDS // 3600,
         "freshness": {
             "last_scored_at": freshness.get("last_scored_at"),
             "newest_event": freshness.get("newest_event"),
@@ -223,7 +223,7 @@ def record_label(
     with sessions.acting_connection(user) as conn:
         shown = conn.execute(
             SHOWN_SQL,
-            {"revid": judgement.revid, "maturity": metrics.PROVISIONAL_MATURITY_SECONDS},
+            {"revid": judgement.revid, "maturity": maturity.PROVISIONAL_MATURITY_SECONDS},
         ).fetchone()
 
         if not shown:

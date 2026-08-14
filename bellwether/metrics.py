@@ -38,53 +38,17 @@ from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_s
 from bellwether.config import get_settings
 from bellwether.db import advisory_lock, connect
 from bellwether.evaluate import BOOTSTRAP_RESAMPLES, SEED
+from bellwether.maturity import COHORT_MATURITY_SECONDS, PROVISIONAL_MATURITY_SECONDS
 from bellwether.runlog import RunContext, new_run_id
 from bellwether.schema import require_current
 
 JOB = "metrics"
 METRICS_LOCK_KEY = 815_010
 
-# Seven days, not M2's 48 hours, and the difference is not a preference.
-#
-# Two different quantities get called "maturity". M2's 48h describes when
-# reverts stop arriving — a property of the world, estimated from the survival
-# curve. This one has to be a window this pipeline has actually LOOKED at, and
-# for the 90% of events outside the maturity cohort there is exactly one check,
-# at the final checkpoint of seven days (M1 §5).
-#
-# Grading needs both, and the binding constraint is observation rather than the
-# world. Using 48h here produced a sample that was 100% positive: a positive
-# qualifies as soon as it is found, a non-cohort negative cannot be confirmed
-# until its seven-day check, and between those two points the only gradeable
-# events are the reverts. At seven days both arms become available at the same
-# moment, which is what makes the sample unbiased rather than merely larger.
-PROVISIONAL_MATURITY_SECONDS = 7 * 24 * 3600
-
-# The maturity cohort is the 10% that receives the FULL checkpoint grid (M1 §5),
-# so a 48h check exists for every one of them and both arms of the inclusion
-# rule become available at 48 hours rather than seven days.
-#
-# It is a deterministic 10% bucket keyed on revid, so within the events it
-# covers it is a probability sample: smaller, not skewed.
-#
-# It does NOT cover the whole table, and the earlier claim that it did was
-# wrong. The flag is written at insert time and roughly 49,000 rows were
-# inserted before that code shipped; ON CONFLICT DO NOTHING means re-ingesting
-# them never corrects it, so the cohort is 0.93% of the table overall while
-# recent ingest runs flag 8.5-12.7% as designed. The cohort therefore begins
-# partway through and is a probability sample of events FROM THAT POINT ON.
-#
-# It is deliberately not backfilled even though the bucket is a pure function
-# of revid. The labeller used the STORED flag to decide which events received
-# the dense checkpoint grid, so a backfilled row would be marked as a cohort
-# member while holding none of the 48h checks the cohort exists to provide —
-# a sample that claims an observation nobody made.
-#
-# Published under its own population label rather than blended into the
-# headline: a reader who could not tell the two apart would take the early
-# number for the real one.
-COHORT_MATURITY_SECONDS = 48 * 3600
-
+# Imported rather than defined here. The serving API needs the same number and
+# its image has no numpy — defining it in this module took the whole modelling
+# stack into the API's import graph and the deploy died on ModuleNotFoundError.
+# See bellwether/maturity.py.
 POPULATIONS: dict[str, int] = {
     "all": PROVISIONAL_MATURITY_SECONDS,
     "maturity_cohort": COHORT_MATURITY_SECONDS,
