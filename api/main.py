@@ -1135,3 +1135,79 @@ def me_endpoint(request: Request) -> dict[str, Any]:
         "role": user["role"],
         "auth_configured": True,
     }
+
+
+# Every run, not just the latest (SRS FR-45: current AND historical).
+#
+# outcome.prediction_metrics is append-only, so the history has been accumulating
+# since M4 — it simply was not published. A page showing only the current figure
+# cannot answer "has this been getting worse", which is the question a metrics
+# page exists for.
+#
+# The aggregate row only, for one population and window: a history that
+# interleaved segments and populations would be a list of numbers that cannot be
+# compared to each other.
+METRICS_HISTORY_SQL = """
+SELECT computed_at, window_label, population, maturity_hours, provisional,
+       n, n_positives, base_rate, weighted_base_rate,
+       pr_auc, pr_auc_ci_low, pr_auc_ci_high, roc_auc, brier,
+       baseline_pr_auc, margin, excluded_immature, excluded_late
+  FROM outcome.prediction_metrics
+ WHERE segment = 'all'
+   AND population = %(population)s
+   AND window_label = %(window)s
+ ORDER BY computed_at DESC
+ LIMIT %(limit)s
+"""
+
+
+@app.get("/metrics/history")
+def metrics_history(population: str = "all", window: str = "7d", limit: int = 60) -> dict[str, Any]:
+    """How the live figure has moved, run by run.
+
+    Every row carries its own `n` and maturity window (NFR-10). A series of
+    PR-AUC values without them would look like a trend when it is mostly the
+    sample growing — early runs are computed over a handful of matured
+    predictions, and the first ones over none at all.
+    """
+    limit = max(1, min(limit, 365))
+    with _connect() as conn:
+        rows = conn.execute(
+            METRICS_HISTORY_SQL,
+            {"population": population, "window": window, "limit": limit},
+        ).fetchall()
+
+    return {
+        "population": population,
+        "window": window,
+        "runs": [
+            {
+                "computed_at": row["computed_at"],
+                "maturity_hours": row["maturity_hours"],
+                "provisional": row["provisional"],
+                "n": row["n"],
+                "n_positives": row["n_positives"],
+                "base_rate": row["base_rate"],
+                "weighted_base_rate": row["weighted_base_rate"],
+                "pr_auc": row["pr_auc"],
+                "pr_auc_ci": [row["pr_auc_ci_low"], row["pr_auc_ci_high"]],
+                "roc_auc": row["roc_auc"],
+                "brier": row["brier"],
+                "baseline_pr_auc": row["baseline_pr_auc"],
+                "margin": row["margin"],
+                "excluded": {
+                    "immature": row["excluded_immature"],
+                    "late": row["excluded_late"],
+                },
+            }
+            for row in rows
+        ],
+        "note": (
+            "One row per metrics run, newest first, for the aggregate of one "
+            "population and window. Every row carries its own n and maturity "
+            "window: a series of PR-AUC values without them looks like a trend "
+            "when it is mostly the sample growing. Runs with a null pr_auc are "
+            "windows that held nothing gradeable, which is a fact about the "
+            "window rather than about the model."
+        ),
+    }

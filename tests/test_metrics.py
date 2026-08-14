@@ -370,3 +370,69 @@ def test_a_database_behind_the_code_says_so_instead_of_crashing(
 
     with pytest.raises(schema.SchemaBehind, match="999_not_applied"):
         metrics.run()
+
+
+@pytest.mark.db
+def test_the_history_carries_its_denominator_on_every_row(fresh_db: None) -> None:
+    """SRS FR-45 and NFR-10. A series of PR-AUC values without n looks like a
+    trend when it is mostly the sample growing — the early runs are computed
+    over a handful of matured predictions and the first ones over none."""
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+
+    with connect() as conn:
+        for n, pr_auc in ((0, None), (40, 0.21), (900, 0.263)):
+            conn.execute(
+                """
+                INSERT INTO outcome.prediction_metrics
+                    (population, window_label, window_end, segment, segment_level,
+                     maturity_hours, n, n_positives, pr_auc)
+                VALUES ('all', '7d', now(), 'all', 'all', 168, %s, %s, %s)
+                """,
+                (n, n // 20, pr_auc),
+            )
+
+    body = TestClient(app).get("/metrics/history").json()
+    assert len(body["runs"]) == 3
+    for run in body["runs"]:
+        assert "n" in run and "maturity_hours" in run
+
+    # A run that graded nothing is published as such rather than skipped: an
+    # absent row would make the series look like it started later than it did.
+    assert any(run["pr_auc"] is None and run["n"] == 0 for run in body["runs"])
+
+
+@pytest.mark.db
+def test_the_history_never_mixes_populations_or_windows(fresh_db: None) -> None:
+    """The cohort figure is computed at 48 hours over a tenth as many events.
+    Interleaving it with the seven-day population would be a list of numbers
+    that cannot be compared to each other."""
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+
+    with connect() as conn:
+        for population, window, maturity in (
+            ("all", "7d", 168),
+            ("maturity_cohort", "7d", 48),
+            ("all", "30d", 168),
+        ):
+            conn.execute(
+                """
+                INSERT INTO outcome.prediction_metrics
+                    (population, window_label, window_end, segment, segment_level,
+                     maturity_hours, n, n_positives, pr_auc)
+                VALUES (%s, %s, now(), 'all', 'all', %s, 100, 5, 0.3)
+                """,
+                (population, window, maturity),
+            )
+
+    client = TestClient(app)
+    default = client.get("/metrics/history").json()
+    cohort = client.get("/metrics/history", params={"population": "maturity_cohort"}).json()
+
+    assert len(default["runs"]) == 1
+    assert default["runs"][0]["maturity_hours"] == 168
+    assert len(cohort["runs"]) == 1
+    assert cohort["runs"][0]["maturity_hours"] == 48
