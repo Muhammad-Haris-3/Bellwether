@@ -61,11 +61,42 @@ def advisory_lock(conn: Conn, key: int) -> Iterator[bool]:
     """
     got = conn.execute("SELECT pg_try_advisory_lock(%s) AS locked", (key,)).fetchone()
     acquired = bool(got and got["locked"])
+
+    # Commit before yielding, or the lock holder is idle IN TRANSACTION for the
+    # whole job.
+    #
+    # Every caller passes a connection used for nothing but the lock, and does
+    # its real work on others. Taking the lock still opens a transaction here,
+    # and psycopg leaves it open — so this session sat idle in transaction for
+    # as long as the job ran. Neon terminates those, and the unlock below then
+    # raised on a connection the server had already closed:
+    #
+    #   IdleInTransactionSessionTimeout: terminating connection due to
+    #   idle-in-transaction timeout
+    #
+    # That is what had been failing the label_secondary step, but nothing made
+    # it specific to that job: all fifteen callers hold the lock this way, and
+    # any of them crosses the timeout on a slow enough run.
+    #
+    # Committing is safe precisely because this lock is session-level, not
+    # transaction-level: pg_try_advisory_lock is held by the SESSION and
+    # survives the commit. Only pg_advisory_xact_lock would be released by it.
+    # Afterwards the session is merely idle, which no timeout collects.
+    conn.commit()
+
     try:
         yield acquired
     finally:
         if acquired:
-            conn.execute("SELECT pg_advisory_unlock(%s)", (key,))
+            try:
+                conn.execute("SELECT pg_advisory_unlock(%s)", (key,))
+                conn.commit()
+            except psycopg.Error:
+                # The session is gone, and a session-level lock dies with it —
+                # so the lock this is trying to release has already been
+                # released. Raising here would turn a job that did its work into
+                # a failed one during cleanup, which is what it did before.
+                pass
 
 
 def fetch_all(
