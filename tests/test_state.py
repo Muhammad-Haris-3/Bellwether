@@ -221,3 +221,50 @@ def test_log_user_id_is_gone() -> None:
     replacement scores worse."""
     assert "log_user_id" not in features.feature_names()
     assert "account_newness" in features.feature_names()
+
+
+def test_out_of_order_arrival_cannot_invert_first_and_last() -> None:
+    """The invariant landing.editor_state and landing.page_state enforce.
+
+    Events do not arrive in timestamp order: ingestion moves forward from a
+    cursor while gapfill reaches back behind it. Assigning `last` on every fold
+    made it the most recently PROCESSED event rather than the latest one, and a
+    key first seen on the later edit ended up with last < first — which both
+    tables reject by CHECK constraint. In production that stopped scoring:
+
+        CheckViolation: new row for relation "editor_state" violates check
+        constraint "editor_state_seen_ordered"
+        DETAIL: Failing row contains (Starklinson, 10:52:55, 10:22:04, 7, 0, 0)
+    """
+    st: dict[str, Any] = {}
+
+    # The later edit is folded FIRST, exactly as the failing batch did.
+    state.observe(st, _event(1, minutes=30))
+    state.observe(st, _event(2, minutes=0))
+
+    editor = st["editors"]["Alice"]
+    page = st["pages"]["P"]
+
+    assert editor["last"] >= editor["first"], "editor_state_seen_ordered"
+    assert page["last"] >= page["first"], "page_state_seen_ordered"
+
+    # `last` is the latest event that happened, not the one processed last.
+    assert editor["last"] == _event(0, minutes=30)["event_ts"]
+    # A page's `first` is order-independent too; it is not a feature.
+    assert page["first"] == _event(0, minutes=0)["event_ts"]
+
+
+def test_editor_first_seen_is_unchanged_by_the_ordering_fix() -> None:
+    """The deliberate asymmetry, pinned so it cannot drift unnoticed.
+
+    editor["first"] feeds editor_first_seen and so account_newness, which
+    carries most of the model's margin. Lowering it on out-of-order arrival
+    would be more accurate AND would change what the model sees, so it is a
+    decision under PREREGISTRATION.md rather than part of a crash fix. This test
+    exists to fail loudly if someone makes that change casually.
+    """
+    st: dict[str, Any] = {}
+    state.observe(st, _event(1, minutes=30))
+    state.observe(st, _event(2, minutes=0))
+
+    assert st["editors"]["Alice"]["first"] == _event(0, minutes=30)["event_ts"]

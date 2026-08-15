@@ -64,6 +64,22 @@ def observe(state: dict[str, Any], event: dict[str, Any], *, was_reverted: bool 
     next event being scored — never from the event's own future.
     """
     key_u, key_p = user_key(event), page_key(event)
+    # NOTE: editor["first"] is deliberately NOT made order-independent, unlike
+    # its page counterpart and unlike `last` below.
+    #
+    # It is set once, here, and never lowered — so out-of-order arrival leaves
+    # it at the first event PROCESSED rather than the earliest that happened,
+    # which reads an account as newer than it is. That is a real inaccuracy and
+    # it is left in place on purpose: `first` is the source of
+    # editor_first_seen, hence account_newness, the feature carrying most of the
+    # model's margin (0.107 with it, 0.039 without). Taking the min would change
+    # what the model sees, so it is a scoring decision under PREREGISTRATION.md
+    # rather than a bug fix, and it belongs to a retrain and a recorded
+    # decision — not to a commit repairing a crash.
+    #
+    # The persist path is already asymmetric in exactly this way: it upserts
+    # `first` through LEAST, so the database does lower it across runs even
+    # though a single in-memory pass does not.
     editor = state.setdefault("editors", {}).setdefault(
         key_u,
         {
@@ -75,7 +91,29 @@ def observe(state: dict[str, Any], event: dict[str, Any], *, was_reverted: bool 
         },
     )
     editor["edits"] += 1
-    editor["last"] = event["event_ts"]
+    # max, not assignment.
+    #
+    # Events do not arrive in timestamp order. Ingestion moves forward from a
+    # cursor while gapfill reaches back behind it, so a batch can fold an edit
+    # from 10:22 after one from 10:52. Assigning made `last` whichever event was
+    # processed most recently rather than the latest one that happened, and for
+    # a user_key first seen on the later edit that put `last` BEFORE `first` —
+    # which landing.editor_state rejects by CHECK constraint, and which stopped
+    # scoring outright:
+    #
+    #   CheckViolation: new row for relation "editor_state" violates check
+    #   constraint "editor_state_seen_ordered"
+    #   DETAIL: Failing row contains (Starklinson, 10:52:55, 10:22:04, 7, 0, 0)
+    #
+    # The persist path already had this right — it upserts through GREATEST, so
+    # a row that reached the database once could never be walked backwards. Only
+    # the first INSERT for a key was exposed, because there was nothing to take
+    # the GREATEST against. This makes the in-memory fold agree with the SQL
+    # that stores it.
+    #
+    # `last` is persisted but is not a feature: history_for reads edits,
+    # reverts_performed, edits_reverted and first. So this cannot move a score.
+    editor["last"] = max(editor["last"], event["event_ts"])
     if event.get("is_reverting"):
         editor["reverts_performed"] += 1
     if was_reverted:
@@ -85,7 +123,12 @@ def observe(state: dict[str, Any], event: dict[str, Any], *, was_reverted: bool 
         key_p, {"first": event["event_ts"], "last": event["event_ts"], "edits": 0, "reverted": 0}
     )
     page["edits"] += 1
-    page["last"] = event["event_ts"]
+    # Same defect, same fix, and page_state carries the same CHECK. It has not
+    # failed yet only because it needs a page whose first two folded edits
+    # arrive reversed; nothing prevents it. Neither `first` nor `last` on a page
+    # is a feature, so both are made order-independent here.
+    page["first"] = min(page["first"], event["event_ts"])
+    page["last"] = max(page["last"], event["event_ts"])
     if was_reverted:
         page["reverted"] += 1
 
