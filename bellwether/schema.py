@@ -77,6 +77,9 @@ SCHEMA_EXPECTATIONS = {
     "015_m3_reproducibility": (
         "SELECT to_regclass('register.reproductions') IS NOT NULL AS present"
     ),
+    "030_m8_watchdog_faults": (
+        "SELECT to_regclass('landing.watchdog_faults') IS NOT NULL AS present"
+    ),
     "029_m7_outcome_blinding": (
         "SELECT "
         + _column("outcome", "label_agreement", "excluded_outcome_visible")
