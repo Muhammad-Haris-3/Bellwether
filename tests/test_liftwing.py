@@ -7,6 +7,7 @@ each other and call the difference a margin.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -59,6 +60,35 @@ def test_a_response_without_a_probability_is_absent_too() -> None:
     respx.post(liftwing.ENDPOINT).mock(return_value=httpx.Response(200, json={"output": {}}))
     with httpx.Client() as client:
         assert liftwing.score_one(client, _limiter(), 123) is None
+
+
+@respx.mock
+def test_a_deleted_revision_is_absent_rather_than_the_end_of_the_run() -> None:
+    """Lift Wing says `revision_info_deleted` with a 422, not a 404.
+
+    That one status code was the difference between "they declined to score
+    this one" and an UpstreamError that ended the whole job. It killed two
+    scheduled runs, and because the crash escaped before the attempt row was
+    written, /metrics went on showing the last SUCCESSFUL fetch — `191 of 191
+    (ok)` — for two days beside a job that had not run since.
+
+    Fetching newest first is what makes this the common case rather than a
+    curiosity: the newest revisions are the ones still liable to be deleted.
+    """
+    route = respx.post(liftwing.ENDPOINT).mock(
+        return_value=httpx.Response(
+            422,
+            json={
+                "detail": (
+                    "Could not make prediction for revisions "
+                    "dict_keys([(1369460563, 'en')]). Reason: ['revision_info_deleted']"
+                )
+            },
+        )
+    )
+    with httpx.Client() as client:
+        assert liftwing.score_one(client, _limiter(), 1369460563) is None
+    assert route.call_count == 1, "a deleted revision stays deleted; retrying spends their budget"
 
 
 @respx.mock
@@ -182,6 +212,126 @@ def test_a_run_with_nothing_to_do_still_records_that_it_ran(fresh_db: None) -> N
     assert row["requested"] == 0
     assert row["status"] == "ok"
     assert "no unscored" in (row["detail"] or "").lower()
+
+
+def _sampled_revids(n: int) -> list[int]:
+    """Revids the published 10% bucket actually selects.
+
+    Found rather than hard-coded: the salt is a constant of the sampling rule,
+    and a test carrying its own copy of the answers would keep passing after
+    someone changed it.
+    """
+    found: list[int] = []
+    revid = 1_300_000_000
+    while len(found) < n:
+        if liftwing.sampled(revid):
+            found.append(revid)
+        revid += 1
+    return found
+
+
+def _scores_kept(conn: Any) -> int:
+    row = conn.execute("SELECT count(*) AS n FROM outcome.liftwing_scores").fetchone()
+    assert row is not None
+    return int(row["n"])
+
+
+def _register(conn: Any, revids: list[int]) -> None:
+    for i, revid in enumerate(revids):
+        conn.execute(
+            """
+            INSERT INTO register.predictions
+                (revid, event_ts, scored_at, model_version, role, score, feature_hash)
+            VALUES (%(revid)s, %(ts)s, %(ts)s, 'v1', 'champion', 0.42, 'abc123')
+            """,
+            {"revid": revid, "ts": datetime(2026, 8, 14, 12, i, tzinfo=UTC)},
+        )
+
+
+@pytest.mark.db
+@respx.mock
+def test_one_deleted_revision_does_not_cost_the_rest_of_the_batch(
+    fresh_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The scores either side of it were already paid for.
+
+    Before this, a single 422 partway through discarded every score the run had
+    collected and left no record that it had tried.
+    """
+    monkeypatch.setattr(liftwing, "REQUESTS_PER_MINUTE", 600)
+    revids = _sampled_revids(3)
+    with connect() as conn:
+        _register(conn, revids)
+
+    scored = httpx.Response(200, json={"output": {"probabilities": {"true": 0.3}}})
+    respx.post(liftwing.ENDPOINT).side_effect = [
+        scored,
+        httpx.Response(422, json={"detail": "Reason: ['revision_info_deleted']"}),
+        scored,
+    ]
+
+    result = liftwing.run(limit=3)
+
+    assert result["fetched"] == 2, "the two they scored are kept"
+    assert result["status"] == "partial", "and the one they declined is visible as a shortfall"
+
+    with connect() as conn:
+        kept = _scores_kept(conn)
+        attempt = conn.execute(
+            "SELECT requested, fetched, status FROM outcome.liftwing_attempts"
+        ).fetchone()
+    assert kept == 2
+    assert attempt is not None
+    assert (attempt["requested"], attempt["fetched"], attempt["status"]) == (3, 2, "partial")
+
+
+@pytest.mark.db
+@respx.mock
+def test_an_unexpected_failure_is_recorded_before_it_is_raised(
+    fresh_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failure that matters is the one nobody anticipated.
+
+    A run that dies without writing an attempt row leaves /metrics serving the
+    last successful one, so a dead job reads as a healthy one — which is the
+    single worst way for this particular project to fail. The row is written
+    first; the run still goes red afterwards.
+    """
+    monkeypatch.setattr(liftwing, "REQUESTS_PER_MINUTE", 600)
+    revids = _sampled_revids(3)
+    with connect() as conn:
+        _register(conn, revids)
+
+    class Boom(Exception):
+        """Deliberately not Gated, UpstreamError, or an httpx error."""
+
+    calls = {"n": 0}
+    real = liftwing.score_one
+
+    def explode_on_the_third(*args: Any, **kw: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise Boom("the database went away")
+        return real(*args, **kw)
+
+    monkeypatch.setattr(liftwing, "score_one", explode_on_the_third)
+    respx.post(liftwing.ENDPOINT).mock(
+        return_value=httpx.Response(200, json={"output": {"probabilities": {"true": 0.3}}})
+    )
+
+    with pytest.raises(Boom):
+        liftwing.run(limit=3)
+
+    with connect() as conn:
+        attempt = conn.execute(
+            "SELECT requested, fetched, status, detail FROM outcome.liftwing_attempts"
+        ).fetchone()
+        kept = _scores_kept(conn)
+
+    assert attempt is not None, "the attempt is recorded even though the run died"
+    assert attempt["status"] == "unavailable"
+    assert "Boom" in (attempt["detail"] or "")
+    assert kept == 2, "and the scores collected before it are committed, not rolled back"
 
 
 @respx.mock
