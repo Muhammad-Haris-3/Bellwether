@@ -139,7 +139,17 @@ def score_one(client: httpx.Client, limiter: RateLimiter, revid: int) -> dict[st
 
     if response.status_code in (401, 403):
         raise Gated(f"{response.status_code} from Lift Wing: {response.text[:200]}")
-    if response.status_code == 404:
+    if response.status_code in (404, 422):
+        # 404 is a revision they have never heard of. 422 is one they have and
+        # decline to score — `revision_info_deleted`, for a revision deleted or
+        # suppressed between our ingesting it and our asking about it.
+        #
+        # Both are the absence this docstring describes, and they were treated
+        # differently: 404 returned None while 422 fell through to the generic
+        # UpstreamError below and ended the entire run. Fetching newest first
+        # makes a recently deleted revision one of the likelier things in any
+        # batch, so this was not a rare path — it killed the job twice in the
+        # week it was noticed and left the benchmark reading as healthy.
         return None
     if response.status_code == 429:
         # Their instruction beats our backoff when they gave one.
@@ -216,68 +226,118 @@ def run(*, limit: int = DEFAULT_BATCH, percent: int = SAMPLE_PERCENT) -> dict[st
             follow_redirects=True,
         )
 
-        with RunContext(run_id, job=JOB) as ctx, connect() as conn:
-            consecutive = 0
+        with RunContext(run_id, job=JOB) as ctx:
+            unexpected: Exception | None = None
             try:
-                for revid in revids:
-                    try:
-                        result = score_one(client, limiter, revid)
-                    except httpx.HTTPError as exc:
-                        # One revision failing after its retries is not the
-                        # service being down. Skip it and keep the rest of the
-                        # batch, which the first version threw away.
-                        consecutive += 1
-                        if consecutive >= CONSECUTIVE_FAILURES_BEFORE_STOPPING:
-                            raise
-                        detail = f"{type(exc).__name__} on {revid}"
-                        continue
+                # The connection lives inside the loop's scope, and every score
+                # is committed as it lands.
+                #
+                # This loop spends minutes waiting on the rate limiter. Holding
+                # one transaction open across all of it left the session idle IN
+                # transaction — the exact shape `db.advisory_lock` documents,
+                # with the exact same ending:
+                #
+                #   IdleInTransactionSessionTimeout: terminating connection due
+                #   to idle-in-transaction timeout
+                #
+                # Committing each row keeps the session merely idle, which no
+                # timeout collects, and means a batch that dies partway keeps
+                # the scores it already spent someone else's bandwidth on.
+                # ON CONFLICT DO NOTHING makes re-running it free.
+                with connect() as conn:
                     consecutive = 0
-                    if result is None:
-                        continue
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            INSERT_SCORE_SQL,
-                            {
-                                "revid": revid,
-                                "score": result["score"],
-                                "model_name": MODEL_NAME,
-                                "model_version": result["model_version"],
-                                "run_id": run_id,
-                            },
-                        )
-                    fetched += 1
+                    for revid in revids:
+                        try:
+                            result = score_one(client, limiter, revid)
+                        except (httpx.HTTPError, UpstreamError) as exc:
+                            # One revision failing after its retries is not the
+                            # service being down. Skip it and keep the rest of
+                            # the batch, which the first version threw away.
+                            #
+                            # UpstreamError belongs here for the same reason:
+                            # it is a RuntimeError, not an httpx one, so it used
+                            # to sail past this handler and the run-level one
+                            # below and take the whole job with it.
+                            consecutive += 1
+                            if consecutive >= CONSECUTIVE_FAILURES_BEFORE_STOPPING:
+                                raise
+                            detail = f"{type(exc).__name__} on {revid}"
+                            continue
+                        consecutive = 0
+                        if result is None:
+                            continue
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                INSERT_SCORE_SQL,
+                                {
+                                    "revid": revid,
+                                    "score": result["score"],
+                                    "model_name": MODEL_NAME,
+                                    "model_version": result["model_version"],
+                                    "run_id": run_id,
+                                },
+                            )
+                        conn.commit()
+                        fetched += 1
             except Gated as exc:
                 # M4-FR-21. Recorded, not routed around.
                 status, detail = "gated", str(exc)[:500]
-            except httpx.HTTPError as exc:
+            except (httpx.HTTPError, UpstreamError) as exc:
                 status, detail = "unavailable", f"{type(exc).__name__}: {exc}"[:500]
+            except Exception as exc:
+                # Anything else at all, including the database going away
+                # underneath the loop.
+                #
+                # Not caught to be survived — it is re-raised below, and the run
+                # still goes red. Caught so that the attempt row gets written
+                # first. Crashing before writing it is what left /metrics
+                # serving a two-day-old `191 of 191 (ok)` next to a job that had
+                # been dead since, and a benchmark reporting its own silence as
+                # success is worse than one reporting nothing at all.
+                #
+                # `unavailable` is the nearest of the four statuses the column
+                # allows; the detail says what actually happened.
+                status = "unavailable"
+                detail = f"{type(exc).__name__}: {exc}"[:500]
+                unexpected = exc
             finally:
                 client.close()
 
-            if status == "ok" and fetched < len(revids):
-                status = "partial"
-                # Two causes, deliberately not merged: Lift Wing having no
-                # opinion about a revision, and a request that kept failing.
-                # The first is normal and the second is worth noticing.
-                detail = (
-                    f"{len(revids) - fetched} of {len(revids)} produced no score "
-                    f"(declined by the service, or failed after retries)"
-                )
+                if status == "ok" and fetched < len(revids):
+                    status = "partial"
+                    # Two causes, deliberately not merged: Lift Wing having no
+                    # opinion about a revision, and a request that kept failing.
+                    # The first is normal and the second is worth noticing.
+                    detail = (
+                        f"{len(revids) - fetched} of {len(revids)} produced no score "
+                        f"(declined by the service, or failed after retries)"
+                    )
 
-            with conn.cursor() as cur:
-                cur.execute(
-                    INSERT_ATTEMPT_SQL,
-                    {
-                        "requested": len(revids),
-                        "fetched": fetched,
-                        "status": status,
-                        "detail": detail,
-                        "run_id": run_id,
-                    },
-                )
+                # A connection of its own, for two reasons. It records the
+                # attempt even when the fetch connection is the thing that died.
+                # And `attempted_at` defaults to now(), which in Postgres is
+                # TRANSACTION start time — sharing the fetch's transaction
+                # stamped every attempt with the moment the run began rather
+                # than the moment it finished, understating each row by however
+                # long the batch took.
+                with connect() as attempt_conn, attempt_conn.cursor() as cur:
+                    cur.execute(
+                        INSERT_ATTEMPT_SQL,
+                        {
+                            "requested": len(revids),
+                            "fetched": fetched,
+                            "status": status,
+                            "detail": detail,
+                            "run_id": run_id,
+                        },
+                    )
+
             ctx.rows_read = len(revids)
             ctx.rows_written = fetched
             ctx.partial = status != "ok"
+
+            if unexpected is not None:
+                raise unexpected
 
     print(f"liftwing: {fetched:,} of {len(revids):,} scored — {status}")
     if detail:
