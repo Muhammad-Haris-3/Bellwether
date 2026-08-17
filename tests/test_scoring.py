@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from bellwether import registry, state
+from bellwether import features, registry, state
 from bellwether.db import connect
 
 NOW = datetime(2026, 8, 14, 12, tzinfo=UTC)
@@ -96,9 +96,22 @@ def _register(conn: Any, version: str, sha: str) -> None:
             (model_version, training_start, training_end, n_train_events,
              n_train_positives, feature_names, hyperparameters, offline_metrics,
              artifact_path, artifact_sha256)
-        VALUES (%s, %s, %s, 100, 10, ARRAY['a'], '{}'::jsonb, '{}'::jsonb, 'models/x.pkl', %s)
+        VALUES (%s, %s, %s, 100, 10, %s, '{}'::jsonb, '{}'::jsonb, 'models/x.pkl', %s)
         """,
-        (version, NOW - timedelta(days=2), NOW - timedelta(days=1), sha),
+        # The REAL feature list, not a placeholder.
+        #
+        # The scorer now selects each model's input columns by its registered
+        # names, so this column is load-bearing rather than decorative.
+        # ARRAY['a'] stood here while nothing read it, and a fixture that lies
+        # about what a model consumes can only exercise the path where that
+        # does not matter.
+        (
+            version,
+            NOW - timedelta(days=2),
+            NOW - timedelta(days=1),
+            features.feature_names(),
+            sha,
+        ),
     )
 
 

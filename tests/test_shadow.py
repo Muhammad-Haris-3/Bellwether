@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from bellwether import registry, score
+from bellwether import features, registry, score
 from bellwether.db import connect
 
 NOW = datetime(2026, 8, 14, 12, tzinfo=UTC)
@@ -57,10 +57,20 @@ def _register(conn: Any, version: str, sha: str, *, days_ago: int = 1) -> None:
             (model_version, trained_at, training_start, training_end, n_train_events,
              n_train_positives, feature_names, hyperparameters, offline_metrics,
              artifact_path, artifact_sha256)
-        VALUES (%s, now() - make_interval(days => %s), %s, %s, 100, 10, ARRAY['a'],
+        VALUES (%s, now() - make_interval(days => %s), %s, %s, 100, 10, %s,
                 '{}'::jsonb, '{}'::jsonb, 'models/x.pkl', %s)
         """,
-        (version, days_ago, NOW - timedelta(days=9), NOW - timedelta(days=8), sha),
+        # The REAL feature list. The scorer selects each model's input columns
+        # by its registered names, so a placeholder here would make the shadow
+        # look incompatible and get dropped before it scored anything.
+        (
+            version,
+            days_ago,
+            NOW - timedelta(days=9),
+            NOW - timedelta(days=8),
+            features.feature_names(),
+            sha,
+        ),
     )
 
 
@@ -191,3 +201,138 @@ def test_a_rolled_back_model_is_not_put_back_into_shadow(
             """
         )
         assert registry.challenger(conn, "champ") is None
+
+
+# ---------------------------------------------------------------------------
+# Feature-set incompatibility, which is not the same as instability
+# ---------------------------------------------------------------------------
+#
+# The per-event handler above exists for a challenger that breaks on some
+# inputs. A model this build cannot feed AT ALL is a different fault with a
+# different fix, and reporting it through the same channel buried it: five
+# thousand "no opinion" events look like a flaky model, not a deployment error.
+
+
+def _register_with_features(
+    conn: Any, version: str, sha: str, names: list[str], *, days_ago: int = 1
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO register.model_registry
+            (model_version, trained_at, training_start, training_end, n_train_events,
+             n_train_positives, feature_names, hyperparameters, offline_metrics,
+             artifact_path, artifact_sha256)
+        VALUES (%s, now() - make_interval(days => %s), %s, %s, 100, 10, %s,
+                '{}'::jsonb, '{}'::jsonb, 'models/x.pkl', %s)
+        """,
+        (version, days_ago, NOW - timedelta(days=9), NOW - timedelta(days=8), names, sha),
+    )
+
+
+@pytest.mark.db
+def test_a_champion_needing_an_absent_feature_scores_nothing(
+    fresh_db: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refuse, rather than improvise.
+
+    The register cannot delete a row. Scoring the champion against a feature set
+    it was not trained on writes numbers that are wrong into evidence that is
+    permanent, and a failed run is recoverable in a way that is not.
+    """
+    monkeypatch.setattr(registry, "MODELS_DIR", tmp_path)
+    champ_sha = _artifact(tmp_path, "champ", ConstantModel(0.7))
+
+    with connect() as conn:
+        for revid in range(1, 4):
+            _event(conn, revid, minutes_ago=100 + revid)
+        _register_with_features(
+            conn, "champ", champ_sha, [*features.feature_names(), "a_feature_from_the_future"]
+        )
+        conn.execute("INSERT INTO decide.champion_history (model_version) VALUES ('champ')")
+
+    result = score.run(limit=100)
+    assert result.get("skipped") is True
+    assert result.get("reason") == "champion feature mismatch"
+
+    with connect() as conn:
+        row = conn.execute("SELECT count(*) AS n FROM register.predictions").fetchone()
+    assert row["n"] == 0, "nothing may be written when the champion cannot be fed"
+
+
+@pytest.mark.db
+def test_an_incompatible_challenger_is_dropped_and_the_champion_still_scores(
+    fresh_db: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The challenger's problem must not become the champion's.
+
+    Dropped once, before the loop, rather than failing per event: the count of
+    "no opinion" events is how an unstable challenger is diagnosed, and filling
+    it with a deployment error destroys that signal.
+    """
+    monkeypatch.setattr(registry, "MODELS_DIR", tmp_path)
+    champ_sha = _artifact(tmp_path, "champ", ConstantModel(0.7))
+    chal_sha = _artifact(tmp_path, "chal", ConstantModel(0.4))
+
+    with connect() as conn:
+        for revid in range(1, 4):
+            _event(conn, revid, minutes_ago=100 + revid)
+        _register_with_features(conn, "champ", champ_sha, features.feature_names(), days_ago=5)
+        _register_with_features(
+            conn, "chal", chal_sha, [*features.feature_names(), "not_built_by_this_code"]
+        )
+        conn.execute("INSERT INTO decide.champion_history (model_version) VALUES ('champ')")
+
+    result = score.run(limit=100)
+    assert result["scored"] == 3, "the champion is unaffected"
+
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT count(*) AS n FROM register.predictions WHERE role = 'shadow'"
+        ).fetchone()
+    assert row["n"] == 0, "no shadow rows from a model that was never fed"
+
+
+@pytest.mark.db
+def test_champion_and_challenger_may_hold_different_feature_sets(
+    fresh_db: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The point of the whole change, and what PREREGISTRATION §11 promises.
+
+    A challenger trained on a SUBSET still scores here, from the same vector, in
+    the same run. Before this, any difference at all meant the challenger raised
+    on every event and accumulated no paired observations, so P-3 could never be
+    reached and the promotion rule could never fire.
+    """
+    monkeypatch.setattr(registry, "MODELS_DIR", tmp_path)
+    champ_sha = _artifact(tmp_path, "champ", ConstantModel(0.7))
+    chal_sha = _artifact(tmp_path, "chal", ConstantModel(0.4))
+
+    narrower = [n for n in features.feature_names() if n != "is_minor"]
+
+    with connect() as conn:
+        for revid in range(1, 4):
+            _event(conn, revid, minutes_ago=100 + revid)
+        _register_with_features(conn, "champ", champ_sha, features.feature_names(), days_ago=5)
+        _register_with_features(conn, "chal", chal_sha, narrower)
+        conn.execute("INSERT INTO decide.champion_history (model_version) VALUES ('champ')")
+
+    result = score.run(limit=100)
+    assert result["scored"] == 3
+
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT role, count(*) AS n, count(DISTINCT feature_hash) AS hashes"
+            "  FROM register.predictions GROUP BY role ORDER BY role"
+        ).fetchall()
+
+    counts = {r["role"]: r["n"] for r in rows}
+    assert counts == {"champion": 3, "shadow": 3}, "both models scored every event"
+
+    with connect() as conn:
+        pair = conn.execute(
+            "SELECT count(DISTINCT feature_hash) AS distinct_hashes"
+            "  FROM register.predictions WHERE revid = 1"
+        ).fetchone()
+    # Different inputs, so different digests — each row's hash describes what
+    # its own model consumed, which is what keeps both reproducible.
+    assert pair["distinct_hashes"] == 2

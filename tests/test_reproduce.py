@@ -43,9 +43,19 @@ def _register(conn: Any, version: str, sha: str) -> None:
             (model_version, training_start, training_end, n_train_events,
              n_train_positives, feature_names, hyperparameters, offline_metrics,
              artifact_path, artifact_sha256)
-        VALUES (%s, %s, %s, 100, 10, ARRAY['a'], '{}'::jsonb, '{}'::jsonb, 'models/x.pkl', %s)
+        VALUES (%s, %s, %s, 100, 10, %s, '{}'::jsonb, '{}'::jsonb, 'models/x.pkl', %s)
         """,
-        (version, NOW - timedelta(days=2), NOW - timedelta(days=1), sha),
+        # The REAL feature list. Reproduction re-derives each prediction against
+        # the names its own model registered, so a placeholder here would hash a
+        # different subset than the scorer did and report a failure that is an
+        # artefact of the fixture.
+        (
+            version,
+            NOW - timedelta(days=2),
+            NOW - timedelta(days=1),
+            features.feature_names(),
+            sha,
+        ),
     )
 
 
