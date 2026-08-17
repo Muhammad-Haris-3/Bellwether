@@ -130,3 +130,74 @@ def test_every_registered_name_is_still_produced():
     """
     vector = features.build({"event_ts": None}, {})
     assert set(vector) == set(features.feature_names())
+
+
+# ---------------------------------------------------------------------------
+# Naming what differed, when a prediction will not re-derive
+# ---------------------------------------------------------------------------
+
+
+def test_the_diagnostic_names_a_planted_single_feature_difference():
+    """A hash cannot be inverted, so the search has to find the value instead.
+
+    The register stores the digest and not the vector, which is why a
+    reproduction rate below 100% stood for days with no cause attached: the
+    failure said something differed and there was nothing to look at.
+    """
+    from bellwether import reproduce
+
+    names = sorted(BASE_VECTOR)
+    # What the scorer saw: the editor was unknown to it.
+    scorer_saw = {**BASE_VECTOR, "editor_edits_seen": 0.0}
+    # What the replay computed: the editor had history.
+    replay_built = {**BASE_VECTOR, "editor_edits_seen": 1.0}
+
+    check = {
+        "vector": replay_built,
+        "history": {"max_user_id_seen": 1_000_000},
+        "event": {"feature_hash": features.feature_hash(scorer_saw, names)},
+    }
+
+    found = reproduce.diagnose(check, names)
+
+    assert found, "the difference should be named, not merely detected"
+    assert any("editor_edits_seen" in line for line in found)
+
+
+def test_the_diagnostic_reports_nothing_when_two_features_differ():
+    """Only single substitutions are searched, and that limit is honest.
+
+    Trying pairs grows as the square and makes a coincidental hash collision
+    stop being unlikely. Finding nothing is a real answer — it says the
+    divergence is not one feature.
+    """
+    from bellwether import reproduce
+
+    names = sorted(BASE_VECTOR)
+    # Both must genuinely differ from BASE_VECTOR, and editor_edits_seen by more
+    # than the +/-1 the candidate set tries, so no single substitution can
+    # reconcile it. The first version of this test set a value the vector
+    # already held — leaving one real difference, which the diagnostic then
+    # correctly named.
+    scorer_saw = {**BASE_VECTOR, "editor_edits_seen": 7.0, "account_newness": 1.0}
+    check = {
+        "vector": dict(BASE_VECTOR),
+        "history": {"max_user_id_seen": 1_000_000},
+        "event": {"feature_hash": features.feature_hash(scorer_saw, names)},
+    }
+
+    assert reproduce.diagnose(check, names) == []
+
+
+def test_the_diagnostic_is_silent_on_a_prediction_that_matches():
+    """It runs only on failures, but must not invent one if handed a match."""
+    from bellwether import reproduce
+
+    names = sorted(BASE_VECTOR)
+    check = {
+        "vector": dict(BASE_VECTOR),
+        "history": {"max_user_id_seen": 1_000_000},
+        "event": {"feature_hash": features.feature_hash(BASE_VECTOR, names)},
+    }
+
+    assert reproduce.diagnose(check, names) == []

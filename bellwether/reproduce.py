@@ -46,6 +46,11 @@ REPRODUCE_LOCK_KEY = 815_009
 _SAMPLE_SALT = "bellwether/reproduce/v1"
 SAMPLE_PERCENT = 5
 
+# How many failures --explain will describe. The output is for a person to
+# read, and the first handful of a systematic divergence say the same thing as
+# the sixty-fifth.
+EXPLAIN_LIMIT = 12
+
 # Exactly what the scorer folded, in exactly the order it folded it.
 #
 # Not a time window over rc_events. The scorer's state is built from the events
@@ -141,7 +146,13 @@ def _load_models(conn: Any, versions: set[str]) -> dict[str, dict[str, Any]]:
     return models
 
 
-def run(*, days: int = 2, percent: int = SAMPLE_PERCENT, history_days: int = 30) -> dict[str, Any]:
+def run(
+    *,
+    days: int = 2,
+    percent: int = SAMPLE_PERCENT,
+    history_days: int = 30,
+    explain: bool = False,
+) -> dict[str, Any]:
     """`days` chooses which predictions to check. `history_days` chooses how far
     back to rebuild the state that produced them, and the two are not the same
     number. The first run conflated them and replayed only the window it was
@@ -219,6 +230,7 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT, history_days: int = 30)
 
                 hash_matched = score_matched = unreproducible = out_of_scope = 0
                 superseded = 0
+                explanations: list[dict[str, Any]] = []
                 # Retained at zero. The column exists because an earlier version
                 # rebuilt each mismatch a second time with the reverts the
                 # scorer had learned late; folding reverts by the moment
@@ -267,6 +279,14 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT, history_days: int = 30)
                         out_of_scope += 1
                     else:
                         unreproducible += 1
+                        if explain and len(explanations) < EXPLAIN_LIMIT:
+                            named = diagnose(check, model_names)
+                            explanations.append(
+                                {
+                                    "revid": event["revid"],
+                                    "found": named or ["no single feature reconciles the hash"],
+                                }
+                            )
 
                     if matched_vector is not None and entry is not None:
                         # Selected by the model's own registered order, which is
@@ -315,12 +335,23 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT, history_days: int = 30)
     print(f"  written by a superseded model {superseded:>7,}  (not checkable)")
     print(f"  score reproduced exactly      {score_matched:>7,}")
 
+    if explanations:
+        print(f"\n  what differed, for the first {len(explanations)} of them:")
+        for item in explanations:
+            print(f"    revid {item['revid']}")
+            for line in item["found"]:
+                print(f"      {line}")
+
     if unreproducible:
+        hint = (
+            " Run with --explain to name the feature that differs."
+            if not explain
+            else " The substitutions above name it, where a single feature explains it."
+        )
         raise ReproductionFailure(
             f"{unreproducible:,} of {total:,} sampled predictions could not be re-derived "
             f"under either definition of state. Only the feature hash is stored, not the "
-            f"vector, so this says something differs without saying what — start from the "
-            f"features that read state."
+            f"vector, so a mismatch says something differs without saying what.{hint}"
         )
 
     return {
@@ -333,6 +364,79 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT, history_days: int = 30)
         "score_matched": score_matched,
         "agreement": round(rate, 6),
     }
+
+
+def diagnose(check: dict[str, Any], names: list[str] | None) -> list[str]:
+    """Name the feature that differs, when a prediction will not re-derive.
+
+    The register stores the hash and not the vector, so a mismatch says only
+    that something differs. That is the sentence in this module's own failure
+    message, and it is why a reproduction rate below 100% has stood since
+    2026-08-14 without a cause: there was nothing to look at.
+
+    A hash cannot be inverted, so this searches instead. For each feature in
+    turn, the recomputed vector is amended to a small set of PRINCIPLED
+    candidate values — the value the alternative state definition would have
+    given — and the hash retried. A candidate that reconciles the hash names
+    both the feature that differed and what the scorer actually saw.
+
+    Only single-feature substitutions are tried. Two simultaneous differences
+    would go unnamed, and that is stated rather than searched for: the
+    combinations grow as the square and a coincidental match stops being
+    unlikely. Finding nothing is a real answer here — it means the divergence
+    is not a single feature, which is itself worth knowing.
+
+    Diagnostic only. Nothing here decides whether a prediction reproduced.
+    """
+    vector, history = check["vector"], check["history"]
+    stored = check["event"]["feature_hash"]
+    found: list[str] = []
+
+    for name, value in sorted(vector.items()):
+        for label, candidate in _candidates(name, value, history).items():
+            if candidate == value:
+                continue
+            amended = {**vector, name: candidate}
+            try:
+                if features.feature_hash(amended, names) == stored:
+                    found.append(f"{name}: computed {value!r}, scorer saw {candidate!r} ({label})")
+            except KeyError:
+                continue
+
+    return found
+
+
+def _candidates(name: str, value: float, history: dict[str, Any]) -> dict[str, float]:
+    """Plausible alternative values for one feature, by how it could diverge.
+
+    Deliberately small. This is a search over a hash, so every extra candidate
+    is another chance at a coincidental collision — and a wrong answer here
+    would send someone after the wrong subsystem for a day.
+    """
+    out: dict[str, float] = {}
+
+    # The editor was unknown to the scorer but known to this replay, or the
+    # reverse. Covers state that was loaded from a persisted row the replay
+    # rebuilt differently, which is the whole family this module suspects.
+    if name.startswith(("editor_", "page_")):
+        out["editor or page unknown to the scorer"] = 0.0
+        out["one fewer than counted"] = max(value - 1.0, 0.0)
+        out["one more than counted"] = value + 1.0
+
+    # account_newness is a ratio against the id frontier. A frontier that had
+    # already moved past this account gives a smaller number; a frontier that
+    # had not yet seen it clamps to 1.0.
+    if name == "account_newness":
+        out["frontier had not yet seen this account"] = 1.0
+        frontier = float(history.get("max_user_id_seen", 0) or 0)
+        if frontier > 0:
+            out["editor absent from state"] = 0.0
+
+    # A boolean that flipped. Cheap to test and unambiguous when it hits.
+    if value in (0.0, 1.0):
+        out["the flag was the other way"] = 1.0 - value
+
+    return out
 
 
 def _predates(conn: Any, event: dict[str, Any], history_start: datetime) -> bool:
@@ -358,8 +462,18 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=2)
     parser.add_argument("--percent", type=int, default=SAMPLE_PERCENT)
     parser.add_argument("--history-days", type=int, default=30)
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="For failures, search for the single feature that reconciles the stored hash",
+    )
     args = parser.parse_args()
-    run(days=args.days, percent=args.percent, history_days=args.history_days)
+    run(
+        days=args.days,
+        percent=args.percent,
+        history_days=args.history_days,
+        explain=args.explain,
+    )
     return 0
 
 

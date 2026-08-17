@@ -30,6 +30,11 @@ on:
         description: "How far back to rebuild state (must exceed days)"
         required: false
         default: "30"
+      explain:
+        description: "Name the feature that differs, for each failure"
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: reproduce
@@ -62,12 +67,12 @@ jobs:
           python -m bellwether.reproduce \
             --days "${{ inputs.days || '2' }}" \
             --percent "${{ inputs.percent || '5' }}" \
-            --history-days "${{ inputs.history_days || '30' }}" 2>&1 | tee reproduce-output.txt
+            --history-days "${{ inputs.history_days || '30' }}"             ${{ inputs.explain && '--explain' || '' }} 2>&1 | tee reproduce-output.txt
 
       - name: Surface the failure
         if: failure()
         run: |
-          DETAIL=$(tail -40 reproduce-output.txt 2>/dev/null \
+          DETAIL=$(tail -80 reproduce-output.txt 2>/dev/null \
             | sed 's/%/%25/g; s/\r//g' \
             | awk '{printf "%s%%0A", $0}')
           echo "::error title=predictions not reproducible::$DETAIL"
