@@ -14,11 +14,49 @@ import psycopg
 from psycopg.rows import DictRow, dict_row
 
 from bellwether.config import get_settings
+from bellwether.usage import METER
 
 # Every connection in this project uses dict_row, so queries read like the SQL
 # they contain rather than like tuple indexing. Spelling the row type out here
 # keeps that visible to the type checker instead of degrading to Any.
 Conn = psycopg.Connection[DictRow]
+
+
+class MeteredCursor(psycopg.Cursor[DictRow]):
+    """A cursor that counts what it hands back.
+
+    Parameterised on DictRow rather than left bare. An unparameterised
+    psycopg.Cursor widens the connection's row type, and every caller that
+    reads `row["column"]` silently degrades to Collection[Any] — losing the
+    type checking that Conn was spelled out above to preserve.
+
+    Metering belongs here rather than in fetch_all because most of this project
+    does not use fetch_all: state, triggers, reconcile and the API all take a
+    cursor from connect() — or call conn.execute() directly — and those are the
+    large reads. Wrapping only the convenience helpers would measure everything
+    except the queries worth measuring.
+
+    Counting happens on FETCH, not on execute. A server-side aggregate returns
+    one row whatever it scanned, and it is the row that crosses the wire and
+    draws on the allowance. Charging for rows scanned would make the cheapest
+    fix available look like the most expensive query in the project.
+    """
+
+    def fetchone(self):
+        row = super().fetchone()
+        if row is not None:
+            METER.record([row])
+        return row
+
+    def fetchmany(self, size=None):
+        rows = super().fetchmany(size)
+        METER.record(rows)
+        return rows
+
+    def fetchall(self):
+        rows = super().fetchall()
+        METER.record(rows)
+        return rows
 
 
 @contextmanager
@@ -31,7 +69,7 @@ def connect(url: str | None = None, *, readonly: bool = False) -> Iterator[Conn]
             "No database URL configured. Set BELLWETHER_DATABASE_URL "
             "(and BELLWETHER_READONLY_DATABASE_URL for the API)."
         )
-    with psycopg.connect(dsn, row_factory=dict_row) as conn:
+    with psycopg.connect(dsn, row_factory=dict_row, cursor_factory=MeteredCursor) as conn:
         if readonly:
             conn.read_only = True
 

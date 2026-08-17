@@ -39,6 +39,7 @@ from typing import Any
 from bellwether.config import get_settings
 from bellwether.db import advisory_lock, connect
 from bellwether.runlog import RunContext, new_run_id
+from bellwether.usage import record_on_exit
 
 JOB = "label_secondary"
 SECONDARY_LOCK_KEY = 815_003
@@ -175,6 +176,10 @@ def run(*, lookback_hours: int | None = None) -> dict[str, Any]:
 
 
 def main() -> int:
+    # Registered before any work, so a run that dies mid-read still
+    # accounts for what it spent.
+    record_on_exit("label_secondary")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lookback-hours", type=int, default=None)
     args = parser.parse_args()

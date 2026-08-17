@@ -15,6 +15,7 @@ import sys
 
 from bellwether.config import get_settings
 from bellwether.db import fetch_all, fetch_one
+from bellwether.usage import record_on_exit
 
 RULE = "=" * 72
 
@@ -295,6 +296,10 @@ def run_health() -> None:
 
 
 def main() -> int:
+    # The heaviest reader in the project by query count, and every one of its
+    # queries is a read — so it is the job whose cost is most worth attributing.
+    record_on_exit("report")
+
     coverage()
     revert_rate_by_maturity()
     detection_latency()

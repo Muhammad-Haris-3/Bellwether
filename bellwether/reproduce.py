@@ -38,6 +38,7 @@ from bellwether import features, frame, knowability, registry, state
 from bellwether.config import get_settings
 from bellwether.db import advisory_lock, connect
 from bellwether.runlog import RunContext, new_run_id
+from bellwether.usage import record_on_exit
 
 JOB = "reproduce"
 REPRODUCE_LOCK_KEY = 815_009
@@ -316,6 +317,10 @@ def _predates(conn: Any, event: dict[str, Any], history_start: datetime) -> bool
 
 
 def main() -> int:
+    # Registered before any work, so a run that dies mid-read still
+    # accounts for what it spent.
+    record_on_exit("reproduce")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, default=2)
     parser.add_argument("--percent", type=int, default=SAMPLE_PERCENT)

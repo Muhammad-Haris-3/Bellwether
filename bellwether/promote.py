@@ -38,6 +38,7 @@ from bellwether.config import get_settings
 from bellwether.db import advisory_lock, connect
 from bellwether.runlog import RunContext, new_run_id
 from bellwether.schema import require_current
+from bellwether.usage import record_on_exit
 
 JOB = "promote"
 PROMOTE_LOCK_KEY = 815_013
@@ -538,6 +539,10 @@ def check_rollback(*, day: Any = None) -> dict[str, Any]:
 
 
 def main() -> int:
+    # Registered before any work, so a run that dies mid-read still
+    # accounts for what it spent.
+    record_on_exit("promote")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--dry-run",

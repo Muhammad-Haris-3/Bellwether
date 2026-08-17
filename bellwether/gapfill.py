@@ -38,6 +38,7 @@ from bellwether.http import MediaWikiClient
 from bellwether.ingest import insert_page
 from bellwether.mediawiki import iter_recent_changes
 from bellwether.runlog import RunContext, new_run_id, utcnow
+from bellwether.usage import record_on_exit
 
 JOB = "gapfill"
 GAPFILL_LOCK_KEY = 815_004
@@ -220,6 +221,10 @@ def run(*, max_gaps: int = 5) -> dict[str, Any]:
 
 
 def main() -> int:
+    # Registered before any work, so a run that dies mid-read still
+    # accounts for what it spent.
+    record_on_exit("gapfill")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--max-gaps", type=int, default=5)
     parser.add_argument(

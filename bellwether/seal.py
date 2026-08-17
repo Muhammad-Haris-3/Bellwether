@@ -35,6 +35,7 @@ from typing import Any
 
 from bellwether.db import connect
 from bellwether.runlog import RunContext, new_run_id, utcnow
+from bellwether.usage import record_on_exit
 
 JOB = "seal"
 SEALS_DIR = Path(__file__).resolve().parent.parent / "seals"
@@ -194,6 +195,10 @@ def verify_month(month: date) -> dict[str, Any]:
 
 
 def main() -> int:
+    # Registered before any work, so a run that dies mid-read still
+    # accounts for what it spent.
+    record_on_exit("seal")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--month", help="YYYY-MM. Defaults to the previous complete month.")
     parser.add_argument("--verify", action="store_true")

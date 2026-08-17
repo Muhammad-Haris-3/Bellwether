@@ -46,6 +46,7 @@ from bellwether.config import get_settings
 from bellwether.db import connect
 from bellwether.runlog import new_run_id
 from bellwether.state import KNOWN_AT_SQL
+from bellwether.usage import record_on_exit
 
 PROVISIONAL_MATURITY_SECONDS = 48 * 3600
 
@@ -407,6 +408,10 @@ def run(*, window_start: str, window_end: str, folds: int = 4) -> dict[str, Any]
 
 
 def main() -> int:
+    # Registered before any work, so a run that dies mid-read still
+    # accounts for what it spent.
+    record_on_exit("evaluate")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--from", dest="start", default="2026-08-10T00:00:00Z")
     parser.add_argument("--to", dest="end", default="2026-08-11T00:00:00Z")

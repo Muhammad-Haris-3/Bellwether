@@ -46,6 +46,7 @@ from bellwether.db import advisory_lock, connect
 from bellwether.http import DEFAULT_TIMEOUT, RateLimiter, UpstreamError
 from bellwether.runlog import RunContext, new_run_id
 from bellwether.schema import require_current
+from bellwether.usage import record_on_exit
 
 JOB = "liftwing"
 LIFTWING_LOCK_KEY = 815_011
@@ -351,6 +352,10 @@ def run(*, limit: int = DEFAULT_BATCH, percent: int = SAMPLE_PERCENT) -> dict[st
 
 
 def main() -> int:
+    # Registered before any work, so a run that dies mid-read still
+    # accounts for what it spent.
+    record_on_exit("liftwing")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=DEFAULT_BATCH)
     parser.add_argument("--percent", type=int, default=SAMPLE_PERCENT)

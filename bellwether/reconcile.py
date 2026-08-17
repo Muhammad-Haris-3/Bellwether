@@ -33,6 +33,7 @@ from typing import Any
 from bellwether import state
 from bellwether.db import advisory_lock, connect
 from bellwether.runlog import RunContext, new_run_id
+from bellwether.usage import record_on_exit
 
 JOB = "reconcile"
 RECONCILE_LOCK_KEY = 815_008
@@ -225,6 +226,10 @@ def run(*, days: int = WINDOW_DAYS, repair: bool = False, show: int = 15) -> dic
 
 
 def main() -> int:
+    # Registered before any work, so a run that dies mid-read still
+    # accounts for what it spent.
+    record_on_exit("reconcile")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, default=WINDOW_DAYS)
     parser.add_argument(

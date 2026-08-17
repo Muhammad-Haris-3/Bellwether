@@ -600,6 +600,34 @@ count to `run_log`.
 | NFR-10 | Every published figure shall carry its sample size and its maturity window |
 | NFR-11 | The system shall degrade honestly: if a job has not run, the app shall state the staleness rather than serve a stale figure silently |
 | NFR-12 | Accessibility: keyboard-operable queue, WCAG AA contrast, screen-reader labels on all controls |
+| NFR-13 | Database **data transfer** shall remain below 80% of the free-tier ceiling per billing period, measured per job and monitored by the watchdog |
+
+### Why NFR-13 is separate from NFR-4
+
+Added after the fact, which is the honest place to record it. NFR-4 caps
+storage, and the retention job has reported against it since M3. Storage was
+never the exposure.
+
+Neon Free meters **data transfer** — bytes read out of the database — as a
+second allowance with a different failure mode. Storage exhaustion refuses
+writes, and ingestion fails loudly with a message about storage. Transfer
+exhaustion refuses **connections**, so every scheduled job and the serving API
+stop within the same hour, on an error that says nothing about what the system
+was doing when it ran out.
+
+GridCast, built by the same author on the same plan and the same architecture,
+exhausted its transfer allowance on 2026-08-17. It stopped completely: the API
+returned 500s, the pages went blank, and because the pipeline reads too, its
+append-only register stopped growing — so the outage cost evidence, not merely
+availability. The register could not even be exported, because exporting is
+reading. Nothing had been counting, so the first signal was a refused
+connection roughly two weeks before the allowance would reset.
+
+Bellwether runs roughly 227 scheduled jobs a day against the same ceiling. The
+requirement is therefore the same shape as NFR-4 and monitored the same way —
+except that the watchdog raises it as an edge-triggered fault rather than a log
+line, because a slowly rising number nobody is told about is the same as no
+number at all.
 
 ### 8.1 How NFR-8 is satisfied
 
@@ -731,6 +759,7 @@ product rather than a pipeline.
 | R-5 | GitHub Actions cron delayed or skipped | High | Low | Cursor-based ingestion converts a missed run into latency, not loss |
 | R-6 | Scheduled workflows disabled after 60 days of repo inactivity | Medium | Medium | Pipeline commits artifacts and seals, keeping the repo active; monitored via staleness check |
 | R-7 | Storage ceiling reached | Medium | Medium | Sampling rate `R` is a tunable parameter; retention job monitored against NFR-4 |
+| R-7a | **Transfer** ceiling reached, stopping ingestion and serving together | Medium | **Fatal** | Realised on the sibling GridCast project 2026-08-17, which lost ~2 weeks of register growth. NFR-13: every read metered per job, watchdog raises an edge-triggered fault at 80%, deferrable jobs stand down at 90% while ingestion and scoring continue. The shared failure mode is the danger — one allowance feeds the pipeline and the API, so exhausting it stops the system *recording* evidence, not merely displaying it |
 | R-8 | Model never decays, so promotion machinery never demonstrates itself | Medium | **High** | Deliberate forced-decay exercise at M5: train a candidate on a deliberately stale window and verify the system rejects it, and inject a synthetic degradation to verify rollback fires. Evidence of the mechanism cannot wait on nature |
 | R-9 | Rate limiting or blocking by Wikimedia | Low | High | Compliant `User-Agent`, volume at <20% of limit, exponential backoff, honour `Retry-After` |
 | R-10 | Scope creep past M5 before M5 is done | High | Medium | M6–M8 not started until M5 meets Definition of Done |

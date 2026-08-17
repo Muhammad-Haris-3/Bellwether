@@ -83,6 +83,20 @@ jobs:
             python -m bellwether.retention
           fi
 
+      # The other Neon allowance. Retention above reports STORAGE; this reports
+      # TRANSFER, which is metered separately and fails differently — storage
+      # exhaustion refuses writes, transfer exhaustion refuses connections, so
+      # every job and the API stop together.
+      #
+      # Non-fatal by design: --report annotates and returns zero. A budget check
+      # that failed this workflow would block the sealing and pruning above it,
+      # which is the opposite of what running out of allowance costs. The
+      # watchdog raises the alert; this is the daily itemised figure, including
+      # which jobs are spending it.
+      - name: Transfer budget
+        if: always()
+        run: python -m bellwether.usage --report
+
       - name: Surface the failure
         if: failure()
         run: |

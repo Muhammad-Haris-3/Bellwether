@@ -41,6 +41,7 @@ from bellwether.evaluate import BOOTSTRAP_RESAMPLES, SEED
 from bellwether.maturity import COHORT_MATURITY_SECONDS, PROVISIONAL_MATURITY_SECONDS
 from bellwether.runlog import RunContext, new_run_id
 from bellwether.schema import require_current
+from bellwether.usage import record_on_exit
 
 JOB = "metrics"
 METRICS_LOCK_KEY = 815_010
@@ -540,6 +541,10 @@ def _write_bins(conn: Any, metric_id: int, rows: list[dict[str, Any]]) -> None:
 
 
 def main() -> int:
+    # Registered before any work, so a run that dies mid-read still
+    # accounts for what it spent.
+    record_on_exit("metrics")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--maturity-hours",

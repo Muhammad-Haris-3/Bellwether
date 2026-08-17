@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from bellwether.db import connect
+from bellwether.usage import record_on_exit
 
 SQL_DIR = Path(__file__).resolve().parent.parent / "sql"
 
@@ -32,6 +33,8 @@ def apply_all(directory: Path | None = None) -> list[str]:
 
 
 def main() -> int:
+    record_on_exit("migrate")
+
     for name in apply_all():
         print(f"applied {name}")
     return 0

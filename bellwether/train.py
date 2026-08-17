@@ -33,6 +33,7 @@ from bellwether import evaluate, knowability, promote, registry
 from bellwether.config import get_settings
 from bellwether.db import connect
 from bellwether.runlog import RunContext, new_run_id
+from bellwether.usage import record_on_exit
 
 JOB = "train"
 
@@ -213,6 +214,10 @@ def run(*, window_start: str, window_end: str) -> dict[str, Any]:
 
 
 def main() -> int:
+    # Registered before any work, so a run that dies mid-read still
+    # accounts for what it spent.
+    record_on_exit("train")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--from", dest="start", required=True)
     parser.add_argument("--to", dest="end", required=True)

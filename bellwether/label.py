@@ -33,6 +33,7 @@ from bellwether.db import advisory_lock, connect
 from bellwether.http import MediaWikiClient
 from bellwether.mediawiki import REVERTED_TAG, fetch_revision_tags
 from bellwether.runlog import RunContext, new_run_id, utcnow
+from bellwether.usage import record_on_exit
 
 JOB = "label"
 LABEL_LOCK_KEY = 815_002
@@ -221,6 +222,10 @@ def run(*, limit: int | None = None) -> dict[str, Any]:
 
 
 def main() -> int:
+    # Registered before any work, so a run that dies mid-read still
+    # accounts for what it spent.
+    record_on_exit("label")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()

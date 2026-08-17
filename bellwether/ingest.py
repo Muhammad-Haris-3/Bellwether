@@ -32,6 +32,7 @@ from bellwether.db import advisory_lock, connect
 from bellwether.http import MediaWikiClient
 from bellwether.mediawiki import REVERTING_TAGS, iter_recent_changes
 from bellwether.runlog import RunContext, new_run_id, utcnow
+from bellwether.usage import record_on_exit
 
 JOB = "ingest"
 
@@ -272,6 +273,10 @@ def run(*, start_override: datetime | None = None, max_pages: int | None = None)
 
 
 def main() -> int:
+    # Registered before any work, so a run that dies mid-read still
+    # accounts for what it spent.
+    record_on_exit("ingest")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--since",

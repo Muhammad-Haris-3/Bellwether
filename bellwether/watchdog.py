@@ -40,6 +40,7 @@ import psycopg
 from bellwether.config import get_settings
 from bellwether.db import connect
 from bellwether.schema import missing
+from bellwether.usage import DECLINE_FRACTION, budget_status, record_on_exit
 
 JOB = "watchdog"
 
@@ -167,6 +168,41 @@ def check(conn: Any, *, deployed_build: str | None = None) -> list[Fault]:
             )
         )
 
+    # --- the transfer allowance ---------------------------------------------
+    #
+    # The failure this cannot afford to discover late. Storage exhaustion
+    # refuses writes and ingestion fails loudly; transfer exhaustion refuses
+    # CONNECTIONS, so every job and the API stop at once, and no amount of
+    # retrying clears it before the billing period does.
+    #
+    # GridCast — same plan, same architecture — lost roughly two weeks of
+    # register growth to exactly this on 2026-08-17, having had no counter and
+    # therefore no warning. The point of putting it here rather than in a log is
+    # that this fault is edge-triggered: it is raised once when the budget
+    # crosses, re-raised daily while it stays crossed, and cleared when the
+    # period resets. A rising number nobody is told about is the same as no
+    # number at all.
+    #
+    # Tolerant of its own absence: the table arrives with sql/031, and a
+    # watchdog that fell over on a missing bookkeeping table would take out
+    # every other check in this function on the way.
+    try:
+        budget = budget_status()
+        if budget["state"] != "ok":
+            faults.append(
+                Fault(
+                    "transfer",
+                    f"estimated database transfer is at {budget['fraction_used']:.0%} of "
+                    f"the period's allowance "
+                    f"(~{budget['bytes_estimated_human']} of {budget['budget_human']} "
+                    f"since {budget['period_start_utc'][:10]}). Past "
+                    f"{DECLINE_FRACTION:.0%} deferrable jobs stand down; ingestion and "
+                    "scoring do not, so the register keeps growing either way",
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 — bookkeeping must not disable the watchdog
+        print(f"watchdog: transfer budget unavailable ({type(exc).__name__})")
+
     # --- the running build (M8-FR-18) --------------------------------------
     #
     # The gap that hid three failed deploys. /health reported ok throughout,
@@ -281,6 +317,10 @@ def run(*, deployed_build: str | None = None) -> dict[str, Any]:
 
 
 def main() -> int:
+    # Registered before any work, so a run that dies mid-read still
+    # accounts for what it spent.
+    record_on_exit("watchdog")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--deployed-build",

@@ -27,6 +27,7 @@ from typing import Any
 from bellwether import features, knowability, registry, state
 from bellwether.db import advisory_lock, connect
 from bellwether.runlog import RunContext, new_run_id, utcnow
+from bellwether.usage import record_on_exit
 
 JOB = "score"
 SCORE_LOCK_KEY = 815_007
@@ -239,6 +240,10 @@ def run(*, limit: int = 5_000, lookback_days: int = 3) -> dict[str, Any]:
 
 
 def main() -> int:
+    # Registered before any work, so a run that dies mid-read still
+    # accounts for what it spent.
+    record_on_exit("score")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=5_000)
     parser.add_argument("--lookback-days", type=int, default=3)

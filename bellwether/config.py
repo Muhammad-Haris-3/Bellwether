@@ -136,6 +136,29 @@ class Settings(BaseSettings):
     # against a number in a document nobody re-reads.
     storage_budget_bytes: int = 400_000_000
 
+    # Neon Free also meters DATA TRANSFER — bytes read out of the database —
+    # and that allowance is a separate one from storage with a separate failure
+    # mode. Storage running out refuses writes; transfer running out refuses
+    # CONNECTIONS, which stops the pipeline and the API together.
+    #
+    # This is not a hypothetical here. GridCast, a sibling project of this one
+    # on the same plan and the same architecture, exhausted its transfer
+    # allowance on 2026-08-17 and stopped completely: the API returned 500s, the
+    # pages went blank, and the pipeline could not read either, so its
+    # append-only register stopped growing. It could not even be backed up,
+    # because exporting it means reading it.
+    #
+    # Bellwether runs roughly 227 scheduled jobs a day against a plan with the
+    # same ceiling, and until now nothing counted its reads. Zero means fall
+    # back to the published free-tier figure in bellwether.usage.
+    transfer_budget_bytes: int = 0
+
+    # The day of the month the transfer allowance resets. It follows the
+    # provider's billing period rather than the calendar, and measuring over a
+    # calendar month when the reset falls mid-month is wrong in both directions
+    # at once: it counts bytes already forgiven and misses bytes that are not.
+    billing_period_day: int = 1
+
     # Beyond this age the wiki's own recentchanges table no longer holds the
     # window, so no number of retries can recover it. Conservative: Wikimedia
     # retains longer, and claiming a gap is permanent too early would hide a

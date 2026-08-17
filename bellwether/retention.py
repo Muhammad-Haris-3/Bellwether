@@ -28,6 +28,7 @@ from typing import Any
 from bellwether.config import get_settings
 from bellwether.db import advisory_lock, connect
 from bellwether.runlog import RunContext, new_run_id
+from bellwether.usage import record_on_exit
 
 JOB = "retention"
 RETENTION_LOCK_KEY = 815_005
@@ -107,6 +108,10 @@ def run(*, dry_run: bool = True) -> dict[str, Any]:
 
 
 def main() -> int:
+    # Registered before any work, so a run that dies mid-read still
+    # accounts for what it spent.
+    record_on_exit("retention")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--apply",
