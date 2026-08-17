@@ -141,87 +141,78 @@ body::after {
   to   { opacity: 1; }
 }
 
-/* ═══ NAVIGATION RAIL ══════════════════════════════════════════════════════
-   Fixed for the life of the session: Status, Timeline, Performance, Queue and
-   About never leave the screen, and never move when a page changes. The rail
-   is the one element that is not part of the scrolling document. */
+/* ═══ NAVIGATION BAR ═══════════════════════════════════════════════════════
+   Fixed horizontal top bar. Wordmark on the left, nav items to the right.
+   The active item carries a 3px red rule along its bottom edge. */
 
 .crumbs {
   position: fixed;
   top: 0;
   left: 0;
+  right: 0;
   z-index: 20;
-  width: var(--rail);
-  height: 100vh;
-  height: 100dvh;
+  width: 100%;
+  height: auto;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: stretch;
-  gap: 2px;
-  padding: var(--space-12) 0 var(--space-8);
+  gap: 0;
+  padding: 0;
   background: var(--ground-deep);
-  border-right: 2px solid var(--rule);
-  overflow-y: auto;
+  border-bottom: 2px solid var(--rule);
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
-/* The wordmark, and the red mark above it. */
+/* Wordmark — left-most cell, set apart by a right rule and a red left stripe. */
 .crumbs::before {
   content: 'Bellwether';
-  display: block;
-  margin: 0 0 auto;
-  padding: 0 var(--space-6) var(--space-8);
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0 var(--space-6);
   font-family: var(--font-heading);
   font-size: 0.82rem;
   font-weight: 800;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--text);
-  border-bottom: 2px solid var(--rule);
-  box-shadow: inset 0 6px 0 -3px var(--accent);
+  white-space: nowrap;
+  border-right: 2px solid var(--rule);
+  box-shadow: inset 4px 0 0 var(--accent);
 }
 
-/* A hairline of provenance at the foot of the rail. */
-.crumbs::after {
-  content: 'Public record · append-only';
-  display: block;
-  margin-top: auto;
-  padding: var(--space-6) var(--space-6) 0;
-  font-size: 0.64rem;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--faint);
-  border-top: 2px solid var(--rule);
-}
+/* No footer tagline in a top bar. */
+.crumbs::after { display: none; }
 
 .crumbs a,
 .crumbs span[aria-current="page"] {
   position: relative;
   display: flex;
   align-items: center;
-  padding: 0.85rem var(--space-6);
+  padding: 1rem var(--space-4);
   font-family: var(--font-heading);
   font-size: 0.74rem;
   font-weight: 800;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   text-decoration: none;
+  white-space: nowrap;
   background: none;
-  transition: color var(--transition), background-color var(--transition), padding-left var(--transition);
+  transition: color var(--transition), background-color var(--transition);
 }
 
-/* The red rule that grows down the left edge — hover and current page share
-   the same mark, so the current page reads as the one already held. */
+/* The red rule wipes in from the centre along the bottom edge. */
 .crumbs a::before,
 .crumbs span[aria-current="page"]::before {
   content: '';
   position: absolute;
   left: 0;
-  top: 0;
+  right: 0;
   bottom: 0;
-  width: 3px;
+  height: 3px;
   background: var(--accent);
-  transform: scaleY(0);
+  transform: scaleX(0);
   transform-origin: center;
   transition: transform 260ms var(--ease);
 }
@@ -231,17 +222,16 @@ body::after {
 .crumbs a:hover {
   color: var(--text);
   background: color-mix(in srgb, #f3f2f2 5%, transparent);
-  padding-left: calc(var(--space-6) + 4px);
 }
 
-.crumbs a:hover::before { transform: scaleY(1); }
+.crumbs a:hover::before { transform: scaleX(1); }
 
 .crumbs span[aria-current="page"] {
   color: var(--text);
   background: color-mix(in srgb, #f3f2f2 7%, transparent);
 }
 
-.crumbs span[aria-current="page"]::before { transform: scaleY(1); }
+.crumbs span[aria-current="page"]::before { transform: scaleX(1); }
 
 /* ═══ MEASURE ══════════════════════════════════════════════════════════════ */
 
@@ -249,14 +239,9 @@ main {
   position: relative;
   z-index: 1;
   max-width: var(--measure);
-  margin: 0 0 0 var(--rail);
-  padding: 6rem var(--gutter) 8rem;
+  margin: 0 auto;
+  padding: 7rem var(--gutter) 8rem;
   counter-reset: section;
-  /* Mount and route change. Opacity only, deliberately: a transform on this
-     element — even one animating to none with fill-mode both — makes <main>
-     the containing block for anything inside it that is position: fixed, and
-     the navigation rail lives inside it. Animating the transform here is what
-     un-pinned the rail and made it scroll away with the page. */
   animation: page-in 480ms var(--ease) both;
 }
 
@@ -268,7 +253,7 @@ main {
 /* The rail must resolve against the viewport whatever is above it in the
    tree, and anchored headings must clear the top bar at narrow widths. */
 main, main > * { transform: none; }
-[id] { scroll-margin-top: 8rem; }
+[id] { scroll-margin-top: 5rem; }
 
 /* ── display type ──────────────────────────────────────────────────────── */
 
@@ -915,64 +900,8 @@ footer span { max-width: 50ch; }
   body::before, body::after, main, .loading { animation: none; }
 }
 
-/* ═══ NARROW ═══════════════════════════════════════════════════════════════
-   Below the rail's width the navigation becomes a fixed top bar — still
-   always on screen, still never moving. */
-
 @media (max-width: 62rem) {
   :root { --gutter: 2rem; }
-
-  .crumbs {
-    width: 100%;
-    height: auto;
-    flex-direction: row;
-    align-items: center;
-    gap: 0;
-    padding: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
-    border-right: none;
-    border-bottom: 2px solid var(--rule);
-  }
-
-  .crumbs::before {
-    margin: 0;
-    padding: 0 var(--space-6);
-    align-self: stretch;
-    display: flex;
-    align-items: center;
-    white-space: nowrap;
-    border-bottom: none;
-    border-right: 2px solid var(--rule);
-    box-shadow: inset 4px 0 0 -1px var(--accent);
-  }
-
-  .crumbs::after { display: none; }
-
-  .crumbs a,
-  .crumbs span[aria-current="page"] {
-    padding: 1rem var(--space-4);
-    white-space: nowrap;
-  }
-
-  .crumbs a::before,
-  .crumbs span[aria-current="page"]::before {
-    left: 0; right: 0; top: auto;
-    bottom: 0;
-    width: auto;
-    height: 3px;
-    transform: scaleX(0);
-  }
-
-  .crumbs a:hover::before,
-  .crumbs span[aria-current="page"]::before { transform: scaleX(1); }
-
-  .crumbs a:hover { padding-left: var(--space-4); }
-
-  main {
-    margin: 0 auto;
-    padding-top: 8rem;
-  }
 }
 
 @media (max-width: 40rem) {
