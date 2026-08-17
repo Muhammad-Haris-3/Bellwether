@@ -317,7 +317,11 @@ def test_champion_and_challenger_may_hold_different_feature_sets(
         conn.execute("INSERT INTO decide.champion_history (model_version) VALUES ('champ')")
 
     result = score.run(limit=100)
-    assert result["scored"] == 3
+    # ROWS, not events: three events scored by two models. score.py reports it
+    # this way on purpose — with a challenger in shadow there are two rows per
+    # event, and calling six "scored with champ" would double the champion's
+    # apparent throughput.
+    assert result["scored"] == 6
 
     with connect() as conn:
         rows = conn.execute(
