@@ -22,7 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from typing import Any
 
@@ -186,12 +186,36 @@ def build(event: dict[str, Any], history: History | None = None) -> dict[str, fl
     return vector
 
 
-def feature_hash(vector: dict[str, float]) -> str:
+def feature_hash(vector: dict[str, float], names: Iterable[str] | None = None) -> str:
     """A stable digest of a feature vector (SRS FR-15).
 
     Sorted keys and repr-free float formatting, so the same inputs give the
     same hash on any machine — which is what lets a historical prediction be
     reproduced and checked rather than taken on trust.
+
+    `names` selects the subset to digest, and callers scoring a model should
+    pass that model's registered feature list.
+
+    The reason is reproducibility across a changing feature set. Hashing the
+    whole vector digests inputs the model never saw, so adding ANY feature
+    changes the recomputed hash of every historical prediction and the whole
+    register reads as unreproducible — which trips the watchdog's
+    reproducibility fault, the one that produced a hundred consecutive red runs
+    when it last fired. Digesting exactly what the model consumed makes a
+    prediction's hash depend on that prediction, and nothing else.
+
+    PREREGISTRATION §11 leaves the feature set free to change. This is what
+    makes that true in practice rather than only on paper.
+
+    Backward compatible where it matters: a model registered with the full set
+    of names then in force produces the identical digest either way, so hashes
+    already in the register still verify. tests/test_register.py pins that.
+
+    A name the vector does not carry raises KeyError rather than being skipped.
+    A model asking for a feature this code no longer produces is an
+    incompatibility, and quietly hashing a shorter vector would turn it into a
+    silent mismatch discovered by the reproduction job days later.
     """
-    payload = json.dumps({k: round(v, 10) for k, v in sorted(vector.items())}, sort_keys=True)
+    selected = vector if names is None else {name: vector[name] for name in names}
+    payload = json.dumps({k: round(v, 10) for k, v in sorted(selected.items())}, sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

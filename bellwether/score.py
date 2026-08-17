@@ -131,6 +131,48 @@ def run(*, limit: int = 5_000, lookback_days: int = 3) -> dict[str, Any]:
         if shadow:
             print(f"score: shadowing {shadow['model_version']}")
 
+        # Each model is scored against the feature list it was REGISTERED with,
+        # not against whatever this code happens to produce today.
+        #
+        # Without this the feature set cannot change, whatever PREREGISTRATION
+        # §11 says. A challenger carrying one new feature would be handed the
+        # champion's row, raise on every event, be swallowed as "no opinion"
+        # below, and accumulate zero paired observations — so P-3 could never be
+        # reached and it would read as a broken model rather than an
+        # incompatible one. The champion is worse: its predict_proba is not
+        # guarded, so the first run after any feature change takes scoring down.
+        available = set(features.feature_names())
+        champion_names = list(champion["feature_names"])
+        unavailable = [n for n in champion_names if n not in available]
+        if unavailable:
+            # Refuse rather than improvise. Scoring the champion on a feature
+            # set it was not trained on writes numbers that are wrong into a
+            # register that cannot delete them, and a failed run is recoverable
+            # in a way that a poisoned register is not.
+            print(
+                f"::error title=Feature mismatch::champion {version} needs "
+                f"{unavailable}, which this build does not produce. Nothing was "
+                "scored. Retrain, or deploy the code the champion was trained with."
+            )
+            return {"skipped": True, "reason": "champion feature mismatch"}
+
+        shadow_names: list[str] = []
+        if shadow and shadow_model is not None:
+            shadow_names = list(shadow["feature_names"])
+            missing_for_shadow = [n for n in shadow_names if n not in available]
+            if missing_for_shadow:
+                # Dropped once, loudly, instead of failing per event. The
+                # per-event handler below exists for a challenger that is
+                # unstable on some inputs; a challenger this build cannot feed
+                # at all is a deployment error, and counting it five thousand
+                # times as "no opinion" would bury the reason.
+                print(
+                    f"::warning title=Shadow incompatible::challenger "
+                    f"{shadow['model_version']} needs {missing_for_shadow}, which "
+                    "this build does not produce. Not shadowed this run."
+                )
+                shadow, shadow_model, shadow_names = None, None, []
+
         with connect() as conn, conn.cursor() as cur:
             cur.execute(
                 UNSCORED_SQL,
@@ -150,40 +192,46 @@ def run(*, limit: int = 5_000, lookback_days: int = 3) -> dict[str, Any]:
 
         with RunContext(run_id, job=JOB) as ctx, connect() as conn:
             st = state.load_for(conn, events)
-            names = features.feature_names()
             rows, late, shadow_failed = [], 0, 0
             now = utcnow()
 
             for event in events:
-                # Built ONCE and scored twice. Rebuilding it per model would be
-                # two chances to disagree about the same event, and the paired
-                # comparison the promotion rule runs on assumes they cannot.
+                # Built ONCE and selected from twice. Rebuilding it per model
+                # would be two chances to disagree about the same event, and the
+                # paired comparison the promotion rule runs on assumes they
+                # cannot. Selecting a subset of one vector cannot disagree with
+                # itself, so the invariant survives models with different
+                # feature sets.
                 vector = features.build(event, state.history_for(st, event))
-                row = [vector[n] for n in names]
-                digest = features.feature_hash(vector)
                 base = {
                     "revid": event["revid"],
                     "event_ts": event["event_ts"],
                     "scored_at": now,
-                    "feature_hash": digest,
                     "observable": event["outcome_already_observable"],
                     "run_id": run_id,
                 }
 
                 if event["outcome_already_observable"]:
                     late += 1
+                # The hash digests exactly what THIS model consumed, so a
+                # prediction stays reproducible when the feature set later grows.
+                # Hashing the whole vector would make every historical row
+                # unreproducible the moment a feature is added.
+                champion_row = [vector[n] for n in champion_names]
                 rows.append(
                     {
                         **base,
                         "model_version": version,
                         "role": "champion",
-                        "score": float(model.predict_proba([row])[0][1]),
+                        "feature_hash": features.feature_hash(vector, champion_names),
+                        "score": float(model.predict_proba([champion_row])[0][1]),
                     }
                 )
 
                 if shadow_model is not None and shadow is not None:
                     try:
-                        shadow_score = float(shadow_model.predict_proba([row])[0][1])
+                        shadow_row = [vector[n] for n in shadow_names]
+                        shadow_score = float(shadow_model.predict_proba([shadow_row])[0][1])
                     except Exception:  # noqa: BLE001 - any failure means "no opinion"
                         # M5-FR-10. A challenger that errors on an event simply
                         # has no score for it, and the pairing drops that event.
@@ -198,6 +246,7 @@ def run(*, limit: int = 5_000, lookback_days: int = 3) -> dict[str, Any]:
                                 **base,
                                 "model_version": shadow["model_version"],
                                 "role": "shadow",
+                                "feature_hash": features.feature_hash(vector, shadow_names),
                                 "score": shadow_score,
                             }
                         )

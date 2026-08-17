@@ -86,7 +86,7 @@ SELECT EXISTS (
 """
 
 MODEL_SQL = """
-SELECT model_version, artifact_sha256 FROM register.model_registry
+SELECT model_version, artifact_sha256, feature_names FROM register.model_registry
  WHERE model_version = ANY(%(versions)s)
 """
 
@@ -114,20 +114,30 @@ def sampled(revid: int, percent: int = SAMPLE_PERCENT) -> bool:
     return frame.bucket(revid, _SAMPLE_SALT) < percent
 
 
-def _load_models(conn: Any, versions: set[str]) -> dict[str, Any]:
+def _load_models(conn: Any, versions: set[str]) -> dict[str, dict[str, Any]]:
     """Digest-verified before loading, exactly as the scorer does. A model that
     does not match its registry entry does not fail to load — it reproduces
     differently, which would read here as a reproducibility failure and is not
-    one."""
+    one.
+
+    Each model's REGISTERED feature list travels with it. A prediction has to
+    be re-derived from the inputs its own model consumed, not from whatever
+    this build produces now — otherwise adding a feature makes the entire
+    history read as unreproducible, and the watchdog's reproducibility fault
+    fires on a change that broke nothing.
+    """
     if not versions:
         return {}
-    models = {}
+    models: dict[str, dict[str, Any]] = {}
     with conn.cursor() as cur:
         cur.execute(MODEL_SQL, {"versions": sorted(versions)})
         for row in cur.fetchall():
             path = registry.verify(row["model_version"], row["artifact_sha256"])
             with path.open("rb") as fh:
-                models[row["model_version"]] = pickle.load(fh)  # noqa: S301 - hash-verified
+                models[row["model_version"]] = {
+                    "model": pickle.load(fh),  # noqa: S301 - hash-verified
+                    "feature_names": list(row["feature_names"]),
+                }
     return models
 
 
@@ -175,7 +185,9 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT, history_days: int = 30)
             # the one this project can actually support.
             current_version = current["model_version"] if current else None
 
-            names = features.feature_names()
+            # No module-level feature list here on purpose: each prediction is
+            # re-derived against the list its own model registered, taken from
+            # `models` below.
             st: dict[str, Any] = {}
             pending: list[tuple[datetime, dict[str, Any]]] = []
             checks: list[dict[str, Any]] = []
@@ -217,7 +229,22 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT, history_days: int = 30)
                 for check in checks:
                     event, vector = check["event"], check["vector"]
                     matched_vector: dict[str, Any] | None = None
-                    if features.feature_hash(vector) == event["feature_hash"]:
+                    entry = models.get(event["model_version"])
+
+                    # Digest the subset this prediction's own model consumed.
+                    # An unknown model — artifact missing, or a version this run
+                    # could not load — falls back to the whole vector, which is
+                    # what the hash meant before models carried their own lists.
+                    model_names = entry["feature_names"] if entry else None
+                    try:
+                        recomputed = features.feature_hash(vector, model_names)
+                    except KeyError:
+                        # The model wants a feature this build no longer
+                        # produces. Genuinely unreproducible under this code,
+                        # and saying so is the honest answer.
+                        recomputed = ""
+
+                    if recomputed and recomputed == event["feature_hash"]:
                         hash_matched += 1
                         matched_vector = vector
                     elif current_version and event["model_version"] != current_version:
@@ -241,10 +268,16 @@ def run(*, days: int = 2, percent: int = SAMPLE_PERCENT, history_days: int = 30)
                     else:
                         unreproducible += 1
 
-                    model = models.get(event["model_version"])
-                    if matched_vector is not None and model is not None:
+                    if matched_vector is not None and entry is not None:
+                        # Selected by the model's own registered order, which is
+                        # the order it was trained in. Using this build's sorted
+                        # list would silently permute the columns the moment the
+                        # feature set changes, and the score would differ for a
+                        # reason that has nothing to do with reproducibility.
                         again = float(
-                            model.predict_proba([[matched_vector[n] for n in names]])[0][1]
+                            entry["model"].predict_proba(
+                                [[matched_vector[n] for n in entry["feature_names"]]]
+                            )[0][1]
                         )
                         if abs(again - float(event["score"])) < 1e-9:
                             score_matched += 1
