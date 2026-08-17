@@ -1,16 +1,15 @@
 import type { Metadata } from "next";
-import { Inter, Outfit } from "next/font/google";
+import { Archivo } from "next/font/google";
 import "./globals.css";
 
-const inter = Inter({
+// One family for the whole site — headings, body, and figures. Archivo has the
+// tabular figures the tables need, so nothing here has to fall back to a
+// separate monospace for numbers.
+const archivo = Archivo({
   subsets: ["latin"],
-  variable: "--font-sans",
-  display: "swap",
-});
-
-const outfit = Outfit({
-  subsets: ["latin"],
-  variable: "--font-heading",
+  weight: ["400", "500", "600", "800"],
+  style: ["normal", "italic"],
+  variable: "--font-archivo",
   display: "swap",
 });
 
@@ -24,9 +23,8 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${inter.variable} ${outfit.variable}`}>
+    <html lang="en" className={archivo.variable}>
       <body>{children}</body>
     </html>
   );
 }
-
