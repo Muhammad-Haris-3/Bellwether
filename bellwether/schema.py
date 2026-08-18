@@ -50,6 +50,12 @@ def _column(schema: str, table: str, column: str) -> str:
 # time later. This makes the question "which migration does this database
 # actually have" answerable from outside, in one request.
 SCHEMA_EXPECTATIONS = {
+    "033_m9_revert_retry": (
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
+        "                WHERE table_schema = 'landing'"
+        "                  AND table_name = 'state_applied_reverts'"
+        "                  AND column_name = 'page_moved') AS present"
+    ),
     "032_m9_state_applied_events": (
         "SELECT to_regclass('landing.state_applied_events') IS NOT NULL AS present"
     ),

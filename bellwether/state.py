@@ -312,14 +312,26 @@ def observe_revert(state: dict[str, Any], event: dict[str, Any]) -> None:
         page["reverted"] += 1
 
 
+# Reverts not yet fully folded: never seen, or seen with a side outstanding.
+#
+# `editor_moved IS NOT NULL` is load-bearing. Rows written before sql/033 record
+# only whether SOMETHING moved, so retrying one could re-apply a revert already
+# counted and inflate the counters this exists to correct. NULL means unknown
+# and is left alone; see the migration.
 PENDING_REVERTS_SQL = f"""
-SELECT e.revid, e.user_name, e.user_id, e.title, k.known_at
+SELECT e.revid, e.user_name, e.user_id, e.title, k.known_at,
+       coalesce(a.editor_moved, false) AS editor_done,
+       coalesce(a.page_moved, false)   AS page_done
   FROM landing.rc_events e
   JOIN LATERAL (SELECT {KNOWN_AT_SQL} AS known_at) k ON true
+  LEFT JOIN landing.state_applied_reverts a ON a.revid = e.revid
  WHERE k.known_at IS NOT NULL
    AND k.known_at <= now()
    AND e.event_ts >= now() - make_interval(days => %(days)s)
-   AND NOT EXISTS (SELECT 1 FROM landing.state_applied_reverts a WHERE a.revid = e.revid)
+   AND (
+         a.revid IS NULL
+         OR (a.editor_moved IS NOT NULL AND NOT (a.editor_moved AND a.page_moved))
+       )
  ORDER BY k.known_at, e.revid
 """
 
@@ -331,10 +343,16 @@ APPLY_PAGE_REVERT_SQL = """
 UPDATE landing.page_state SET edits_reverted = edits_reverted + 1 WHERE page_key = %(key)s
 """
 
+# Flags only ever go false -> true, so a retry that lands cannot un-record an
+# earlier one, and two runs racing on the same revert converge rather than
+# fight. counters_moved is kept in step for the surfaces that already read it.
 MARK_APPLIED_SQL = """
-INSERT INTO landing.state_applied_reverts (revid, counters_moved)
-VALUES (%(revid)s, %(moved)s)
-ON CONFLICT (revid) DO NOTHING
+INSERT INTO landing.state_applied_reverts (revid, counters_moved, editor_moved, page_moved)
+VALUES (%(revid)s, %(moved)s, %(editor)s, %(page)s)
+ON CONFLICT (revid) DO UPDATE SET
+    editor_moved   = landing.state_applied_reverts.editor_moved OR EXCLUDED.editor_moved,
+    page_moved     = landing.state_applied_reverts.page_moved   OR EXCLUDED.page_moved,
+    counters_moved = landing.state_applied_reverts.counters_moved OR EXCLUDED.counters_moved
 """
 
 
@@ -352,27 +370,62 @@ def apply_reverts(conn: Any, *, days: int = 30) -> dict[str, int]:
     timestamp watermark. Applied in discovery order, which is the order the
     replay uses, so the two arrive at the same counters.
     """
-    applied = moved = missing = 0
+    applied = moved = missing = retried = partial = 0
     with conn.cursor() as cur:
         cur.execute(PENDING_REVERTS_SQL, {"days": days})
         pending = cur.fetchall()
 
         for event in pending:
-            cur.execute(APPLY_EDITOR_REVERT_SQL, {"key": user_key(event)})
-            touched = cur.rowcount
-            cur.execute(APPLY_PAGE_REVERT_SQL, {"key": page_key(event)})
-            touched += cur.rowcount
-            # An edit whose editor was never seen online cannot be incremented.
-            # It is still recorded as handled, or every run would retry it
-            # forever and the count would never mean anything.
-            if touched:
+            was_seen = event["editor_done"] or event["page_done"]
+            if was_seen:
+                retried += 1
+
+            # Each side, separately, and only the side still outstanding.
+            #
+            # These were summed into one `touched` before. A revert that moved
+            # the editor but found no page row counted as handled, and the page
+            # counter stayed short forever while the record claimed success —
+            # invisible, because counters_moved cannot tell the two apart.
+            editor_done = bool(event["editor_done"])
+            if not editor_done:
+                cur.execute(APPLY_EDITOR_REVERT_SQL, {"key": user_key(event)})
+                editor_done = cur.rowcount > 0
+
+            page_done = bool(event["page_done"])
+            if not page_done:
+                cur.execute(APPLY_PAGE_REVERT_SQL, {"key": page_key(event)})
+                page_done = cur.rowcount > 0
+
+            # An edit whose editor or page has never been folded online cannot
+            # be incremented yet. It stays outstanding and is retried on later
+            # runs, because the row usually appears once that editor edits again
+            # and is scored. The `days` window is what stops that being forever:
+            # a revert whose row never arrives ages out of the query.
+            if editor_done and page_done:
                 moved += 1
+            elif editor_done or page_done:
+                partial += 1
             else:
                 missing += 1
-            cur.execute(MARK_APPLIED_SQL, {"revid": event["revid"], "moved": bool(touched)})
+
+            cur.execute(
+                MARK_APPLIED_SQL,
+                {
+                    "revid": event["revid"],
+                    "moved": editor_done or page_done,
+                    "editor": editor_done,
+                    "page": page_done,
+                },
+            )
             applied += 1
 
-    return {"applied": applied, "counters_moved": moved, "no_row_to_move": missing}
+    return {
+        "applied": applied,
+        "counters_moved": moved,
+        "no_row_to_move": missing,
+        "partly_applied": partial,
+        "retried": retried,
+    }
 
 
 LOAD_EDITORS_SQL = """
@@ -553,9 +606,11 @@ def main() -> int:
                 ctx.rows_read = result["applied"]
                 ctx.rows_written = result["counters_moved"]
         print(
-            f"state: folded {result['applied']:,} newly discovered reverts "
-            f"({result['counters_moved']:,} moved a counter, "
-            f"{result['no_row_to_move']:,} had no row online)"
+            f"state: folded {result['applied']:,} reverts "
+            f"({result['counters_moved']:,} fully applied, "
+            f"{result['partly_applied']:,} one side only, "
+            f"{result['no_row_to_move']:,} no row online yet, "
+            f"{result['retried']:,} were retries)"
         )
         return 0
 

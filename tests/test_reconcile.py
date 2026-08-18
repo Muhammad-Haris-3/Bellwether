@@ -187,7 +187,13 @@ def test_the_online_path_cannot_maintain_the_revert_counters(fresh_db: None) -> 
     # without overwriting anything.
     with connect() as conn:
         result = state.apply_reverts(conn, days=30)
-    assert result == {"applied": 1, "counters_moved": 1, "no_row_to_move": 0}
+    assert result == {
+        "applied": 1,
+        "counters_moved": 1,
+        "no_row_to_move": 0,
+        "partly_applied": 0,
+        "retried": 0,
+    }
 
     assert reconcile.run(days=7)["divergences"] == 0
 
@@ -253,3 +259,143 @@ def test_a_revert_nobody_has_discovered_yet_is_not_folded_in(fresh_db: None) -> 
 
         replayed = state.replay(conn, days=7)["state"]
     assert replayed["editors"]["Alice"]["edits_reverted"] == 0
+
+
+# ---------------------------------------------------------------------------
+# A revert whose row was not there yet
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.db
+def test_a_revert_with_no_row_yet_is_applied_once_the_row_appears(fresh_db: None) -> None:
+    """The seventeen-of-forty that were dropped every run.
+
+    A revert can be discovered before its editor has ever been folded — the
+    edit sits outside the scorer's lookback, or inside the champion's training
+    window, which the scorer refuses to score and therefore never folds. The
+    increment had nowhere to land, and the revert was recorded as handled, so
+    it was never applied even after the editor edited again and got a row.
+
+    The replay folds it regardless, because the edit is in rc_events. That gap
+    is the editor_edits_reverted and page.reverted divergence reconcile
+    measures.
+    """
+    with connect() as conn:
+        _event(conn, 1, minutes_ago=200)
+        conn.execute(
+            """
+            INSERT INTO outcome.revert_events (revert_revid, reverted_revid, revert_ts, method)
+            VALUES (2, 1, now() - make_interval(mins => 150), 'mw-undo')
+            """
+        )
+
+        # Discovered before anything was folded: no editor_state row exists.
+        first = state.apply_reverts(conn)
+        assert first["applied"] == 1
+        assert first["no_row_to_move"] == 1
+        assert first["counters_moved"] == 0
+
+        # The editor edits again and is scored, so the row now exists — at zero,
+        # because scoring never knows an outcome.
+        _score_the_batch(conn)
+        row = conn.execute(
+            "SELECT edits_reverted FROM landing.editor_state WHERE user_key = 'Alice'"
+        ).fetchone()
+        assert row["edits_reverted"] == 0
+
+        # The retry is the fix: previously this revert was marked handled and
+        # would never be looked at again.
+        second = state.apply_reverts(conn)
+        assert second["retried"] == 1
+        assert second["counters_moved"] == 1
+
+        row = conn.execute(
+            "SELECT edits_reverted FROM landing.editor_state WHERE user_key = 'Alice'"
+        ).fetchone()
+        assert row["edits_reverted"] == 1
+
+        # And it must not keep applying. Retrying forever would be the other bug.
+        assert state.apply_reverts(conn)["applied"] == 0
+        row = conn.execute(
+            "SELECT edits_reverted FROM landing.editor_state WHERE user_key = 'Alice'"
+        ).fetchone()
+        assert row["edits_reverted"] == 1
+
+
+@pytest.mark.db
+def test_a_revert_that_moved_only_one_side_is_not_recorded_as_done(fresh_db: None) -> None:
+    """The defect the old counter could not express.
+
+    apply_reverts summed the editor and page rowcounts into one `touched`, so a
+    revert that incremented the editor but found no page row counted as moved
+    and was marked fully handled. The page counter stayed short forever while
+    the record claimed success.
+    """
+    with connect() as conn:
+        _event(conn, 1, minutes_ago=200)
+        _score_the_batch(conn)
+
+        # Remove the page row, leaving the editor's in place: one side present,
+        # one absent, which is what a partly-folded pair looks like.
+        conn.execute("DELETE FROM landing.page_state")
+        conn.execute(
+            """
+            INSERT INTO outcome.revert_events (revert_revid, reverted_revid, revert_ts, method)
+            VALUES (2, 1, now() - make_interval(mins => 150), 'mw-undo')
+            """
+        )
+
+        first = state.apply_reverts(conn)
+        assert first["partly_applied"] == 1, "one side landed, one did not"
+        assert first["counters_moved"] == 0, "a half-applied revert is not applied"
+
+        marked = conn.execute(
+            "SELECT editor_moved, page_moved FROM landing.state_applied_reverts WHERE revid = 1"
+        ).fetchone()
+        assert marked["editor_moved"] is True
+        assert marked["page_moved"] is False
+
+        # The editor side must not be applied a second time by the retry.
+        _score_the_batch(conn)
+        second = state.apply_reverts(conn)
+        assert second["counters_moved"] == 1
+
+        editor = conn.execute(
+            "SELECT edits_reverted FROM landing.editor_state WHERE user_key = 'Alice'"
+        ).fetchone()
+        page = conn.execute(
+            "SELECT edits_reverted FROM landing.page_state WHERE page_key = 'Page'"
+        ).fetchone()
+    assert editor["edits_reverted"] == 1, "counted once, not twice"
+    assert page["edits_reverted"] == 1
+
+
+@pytest.mark.db
+def test_a_pre_migration_row_is_never_retried(fresh_db: None) -> None:
+    """NULL means unknown, and unknown must not be re-applied.
+
+    Rows written before sql/033 record only whether SOMETHING moved, so a retry
+    could re-apply a revert already counted. Under-counting a known amount is
+    recoverable; double-counting silently is not.
+    """
+    with connect() as conn:
+        _event(conn, 1, minutes_ago=200)
+        _score_the_batch(conn)
+        conn.execute(
+            """
+            INSERT INTO outcome.revert_events (revert_revid, reverted_revid, revert_ts, method)
+            VALUES (2, 1, now() - make_interval(mins => 150), 'mw-undo')
+            """
+        )
+        # Exactly what the old code left behind: handled, one flag, both new
+        # columns NULL.
+        conn.execute(
+            "INSERT INTO landing.state_applied_reverts (revid, counters_moved) VALUES (1, true)"
+        )
+
+        assert state.apply_reverts(conn)["applied"] == 0, "NULL rows are left alone"
+
+        row = conn.execute(
+            "SELECT edits_reverted FROM landing.editor_state WHERE user_key = 'Alice'"
+        ).fetchone()
+    assert row["edits_reverted"] == 0, "not re-applied on top of whatever it already did"
