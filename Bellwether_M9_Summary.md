@@ -190,29 +190,57 @@ counter update is skipped. The two manual rebuild paths (`state.run` and
 `reconcile --repair`) record their replayed revids for the same reason, so a
 rebuild cannot reintroduce the doubling through a different door.
 
-### 4.4 What is NOT fixed
+### 4.4 The two producers, closed at source
 
-Recorded rather than papered over:
+Both were fixed after the first draft of this summary listed them as open.
 
-1. **A re-scored event reads a history containing its own first fold.** The
-   state it loads was persisted with that event already in it. Skipping the
-   second fold stops the inflation; it does not make the re-scored prediction's
-   history point-in-time correct. This is a leak — small, bounded to events
-   re-scored across a champion change, and real.
-2. **The training-window gap.** Inherent to folding-during-scoring; the online
-   path can never fold what it refuses to score.
+**The training-window gap.** The scorer refuses to score inside the champion's
+training window — correctly; the register measures out-of-sample behaviour.
+It also never *folded* those events, so the counters were short by exactly that
+set. They are now folded and still never scored. Nothing can be contaminated by
+a fold, because no prediction is written. The fold stays inside the scoring
+loop, in event order, between reading the state and advancing it: moving it
+elsewhere would place those events at the wrong point in the sequence, which is
+what the point-in-time guarantee rests on.
 
-Both belong to **decoupling state from scoring** — folding every ingested event
-exactly once, driven by ingestion rather than by which model needs a
-prediction. That is the correct architecture and it is a larger change than
-this one.
+**The re-scored-event leak.** `UNSCORED_SQL` keyed on `model_version`, so a
+promotion made every event in the lookback window unscored again for the
+incoming champion, and it back-scored them from state that already contained
+them. Removed. A champion now skips anything *any* champion has scored.
 
-3. **The existing drift is not repaired.** `reconcile --repair` was not run, for
-   the reason `reconcile` itself gives: *"a job that quietly corrects drift
-   removes the only signal that something is producing it."* Repair should
-   follow confirmation that the fix holds, not precede it.
+Nothing is lost by that. An incoming champion ran in shadow across exactly that
+window and already scored those events there, in real time, from clean state —
+and the shadow record is what the promotion rule pairs on. The register now
+holds one champion prediction per event, by whichever champion was live when it
+happened, which is what a register of forecasts-before-outcomes should have
+held all along. A model promoted today issuing predictions for edits from three
+days ago was filling in, not forecasting.
 
----
+`landing.state_applied_events` is belt-and-braces on this path now, but still
+load-bearing on the rebuild paths: `state.run` and `reconcile --repair` both
+persist a replay, and without the ledger the scorer would fold those events
+again on top.
+
+### 4.5 Repair, and why it was not safe until now
+
+`reconcile --repair` writes counters only. It previously would have written
+`first` as well, and that is not a repair — `observe` deliberately never lowers
+`first`, and the comment there is explicit that changing it is *"a scoring
+decision under PREREGISTRATION.md rather than a bug fix"*, because it moves
+`account_newness` and `editor_days_known` under a champion trained on the other
+definition. A replay folds in `event_ts` order and finds the true earliest, so
+a repair writing `first` would have made that change silently, as a side effect
+of tidying a table.
+
+The line drawn is: a count that disagrees with the events is simply wrong, and
+correcting it is a repair. Redefining what `first` means is a modelling
+decision and still needs a retrain and a recorded decision.
+
+**Still open, deliberately:** the accumulated drift is not repaired. The
+producers are fixed, so it should stop growing; that wants confirming from
+reconcile's own numbers before anything overwrites the evidence, for the reason
+reconcile gives — *"a job that quietly corrects drift removes the only signal
+that something is producing it."*
 
 ## 5. Consequences for what has been published
 
@@ -233,8 +261,12 @@ Stated plainly because the alternative is letting it stand:
 
 ## 6. Carried forward
 
-1. **Decouple state folding from scoring.** Fold every ingested event exactly
-   once at ingestion. Removes both remaining causes at their root.
+1. **Decouple state folding from scoring** remains the right end state. The two
+   producers are closed, but folding still happens inside the scoring loop —
+   it has to, because that is where the point-in-time ordering lives. Reading
+   state *as of* an event time, rather than mutating a running counter, is what
+   would make the coupling unnecessary. That is a temporal-state redesign and
+   is not attempted here.
 2. **Repair the accumulated drift**, once the fix is confirmed holding —
    `reconcile --repair`, deliberately, with the before and after recorded.
 3. **The single-feature dependency is still open.** `account_newness` carries
