@@ -321,7 +321,8 @@ def observe_revert(state: dict[str, Any], event: dict[str, Any]) -> None:
 PENDING_REVERTS_SQL = f"""
 SELECT e.revid, e.user_name, e.user_id, e.title, k.known_at,
        coalesce(a.editor_moved, false) AS editor_done,
-       coalesce(a.page_moved, false)   AS page_done
+       coalesce(a.page_moved, false)   AS page_done,
+       (a.revid IS NOT NULL)           AS was_attempted
   FROM landing.rc_events e
   JOIN LATERAL (SELECT {KNOWN_AT_SQL} AS known_at) k ON true
   LEFT JOIN landing.state_applied_reverts a ON a.revid = e.revid
@@ -376,8 +377,11 @@ def apply_reverts(conn: Any, *, days: int = 30) -> dict[str, int]:
         pending = cur.fetchall()
 
         for event in pending:
-            was_seen = event["editor_done"] or event["page_done"]
-            if was_seen:
+            # Attempted before, whichever sides landed. Counting only the
+            # ones where a side had already landed missed the commonest retry
+            # of all — the revert that found NEITHER row the first time, which
+            # is the seventeen-of-forty this change exists for.
+            if event["was_attempted"]:
                 retried += 1
 
             # Each side, separately, and only the side still outstanding.
