@@ -399,8 +399,13 @@ def test_a_re_scored_event_is_not_folded_into_state_twice(
         ).fetchone()
         ledger = conn.execute("SELECT count(*) AS n FROM landing.state_applied_events").fetchone()
 
-    assert row["edits_seen"] == 5, "still five: the second pass must not fold them again"
-    assert scored["n"] == 5, "but the new champion did score every event"
+    assert row["edits_seen"] == 5, "still five: nothing is folded a second time"
+    # Once back-scoring was removed the incoming champion no longer touches
+    # these events at all, so the ledger is belt to that braces here. It still
+    # carries the load on the rebuild paths — state.run and reconcile --repair
+    # both persist a replay, and without the ledger the scorer would fold those
+    # events again on top.
+    assert scored["n"] == 0, "the new champion does not back-score what champ1 scored"
     assert ledger["n"] == 5, "one ledger row per event, not per scoring pass"
 
 
