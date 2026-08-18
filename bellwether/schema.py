@@ -50,6 +50,9 @@ def _column(schema: str, table: str, column: str) -> str:
 # time later. This makes the question "which migration does this database
 # actually have" answerable from outside, in one request.
 SCHEMA_EXPECTATIONS = {
+    "032_m9_state_applied_events": (
+        "SELECT to_regclass('landing.state_applied_events') IS NOT NULL AS present"
+    ),
     "031_m9_transfer_usage": "SELECT to_regclass('landing.db_transfer') IS NOT NULL AS present",
     "001_schema": (
         "SELECT to_regclass('landing.rc_events') IS NOT NULL"

@@ -195,6 +195,23 @@ def run(*, limit: int = 5_000, lookback_days: int = 3) -> dict[str, Any]:
             rows, late, shadow_failed = [], 0, 0
             now = utcnow()
 
+            # Which of these are ALREADY counted in the state just loaded.
+            #
+            # An event can reach this loop twice. UNSCORED_SQL gates on
+            # model_version, so a champion change makes every event in the
+            # lookback window eligible again for the new champion — correctly,
+            # because the new model does need a prediction for them. What must
+            # not happen twice is the FOLD: reconcile measured editor.edits at
+            # exactly double for editors active across the one promotion this
+            # project has had, because observe ran again on the same events and
+            # persist wrote an absolute count seeded from the inflated row.
+            #
+            # Scoring is unaffected. Only the counter update is skipped.
+            already = state.already_folded(conn, [e["revid"] for e in events])
+            folded: list[int] = []
+            if already:
+                print(f"score: {len(already):,} events already in state, not folding again")
+
             for event in events:
                 # Built ONCE and selected from twice. Rebuilding it per model
                 # would be two chances to disagree about the same event, and the
@@ -251,13 +268,19 @@ def run(*, limit: int = 5_000, lookback_days: int = 3) -> dict[str, Any]:
                             }
                         )
 
-                # After the score, never before.
-                state.observe(st, event)
+                # After the score, never before — and once per event, ever.
+                if event["revid"] not in already:
+                    state.observe(st, event)
+                    folded.append(event["revid"])
 
             with conn.cursor() as cur:
                 cur.executemany(INSERT_PREDICTION_SQL, rows)
                 written = max(cur.rowcount, 0)
             state.persist(conn, st)
+            # Same transaction as the persist it describes. Split across two, a
+            # crash between them leaves the counters moved and the ledger
+            # silent, and the next run folds these events again.
+            state.record_folded(conn, folded, source="score")
 
             ctx.rows_read = len(events)
             ctx.rows_written = written

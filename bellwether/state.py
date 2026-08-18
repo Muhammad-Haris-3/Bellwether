@@ -143,6 +143,49 @@ def observe(state: dict[str, Any], event: dict[str, Any], *, was_reverted: bool 
         state["max_user_id"] = user_id
 
 
+ALREADY_FOLDED_SQL = """
+SELECT revid FROM landing.state_applied_events WHERE revid = ANY(%(revids)s)
+"""
+
+RECORD_FOLDED_SQL = """
+INSERT INTO landing.state_applied_events (revid, applied_by)
+SELECT unnest(%(revids)s::bigint[]), %(source)s
+ON CONFLICT (revid) DO NOTHING
+"""
+
+
+def already_folded(conn: Any, revids: list[int]) -> set[int]:
+    """Which of these events are already counted in the persisted state.
+
+    Asked against the batch rather than the table, because at steady state the
+    ledger holds every event ever scored and the batch holds a few dozen.
+    """
+    if not revids:
+        return set()
+    with conn.cursor() as cur:
+        cur.execute(ALREADY_FOLDED_SQL, {"revids": sorted(revids)})
+        return {row["revid"] for row in cur.fetchall()}
+
+
+def record_folded(conn: Any, revids: list[int], *, source: str = "score") -> int:
+    """Record that these events are now counted in the persisted state.
+
+    ON CONFLICT DO NOTHING rather than an error: two writers racing on the same
+    event is exactly the situation this prevents, and the loser has nothing to
+    complain about — the fold it was about to duplicate is already recorded.
+
+    Must be written in the SAME transaction as the persist it describes. Split
+    across two, a crash between them leaves the counters moved and the ledger
+    silent, and the next run folds those events again — rebuilding the bug this
+    was written to remove.
+    """
+    if not revids:
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(RECORD_FOLDED_SQL, {"revids": sorted(revids), "source": source})
+        return max(cur.rowcount, 0)
+
+
 def history_for(state: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
     """The history view for an event: everything folded in *before* it."""
     editor = state.get("editors", {}).get(user_key(event))
@@ -247,7 +290,16 @@ def replay(conn: Any, *, days: int) -> dict[str, Any]:
         if known_at <= horizon:
             observe_revert(state, reverted)
 
-    return {"state": state, "coverage": coverage, "events": len(events)}
+    # The revids this replay folded. A caller that PERSISTS the result has to
+    # record them, or the online path will fold them again on top — which is
+    # the doubling landing.state_applied_events exists to prevent, arriving by
+    # a different door.
+    return {
+        "state": state,
+        "coverage": coverage,
+        "events": len(events),
+        "revids": [event["revid"] for event in events],
+    }
 
 
 def observe_revert(state: dict[str, Any], event: dict[str, Any]) -> None:
@@ -455,6 +507,11 @@ def run(*, days: int = 30) -> dict[str, Any]:
         with RunContext(run_id, job=JOB) as run_ctx, connect() as conn:
             result = replay(conn, days=days)
             editors, pages = persist(conn, result["state"])
+            # A full rebuild puts these events into the counters just as the
+            # online path would, so the ledger has to say so. Without it the
+            # scorer would fold every replayed event a second time, which is
+            # the doubling arriving through the rebuild instead of a promotion.
+            record_folded(conn, result["revids"], source="replay")
             run_ctx.rows_read = result["events"]
             run_ctx.rows_written = editors + pages
 
