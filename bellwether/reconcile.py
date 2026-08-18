@@ -180,7 +180,7 @@ def run(*, days: int = WINDOW_DAYS, repair: bool = False, show: int = 15) -> dic
             ctx.partial = bool(found)
 
             if repair and found:
-                editors, pages = state.persist(conn, result["state"])
+                editors, pages = state.persist(conn, result["state"], counters_only=True)
                 # Same reason as bellwether.state's rebuild: a repair writes the
                 # replayed counters, so the ledger has to record what they now
                 # include, or the scorer folds those events again on top of it.

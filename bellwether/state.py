@@ -520,7 +520,40 @@ ON CONFLICT (page_key) DO UPDATE SET
 """
 
 
-def persist(conn: Any, state: dict[str, Any]) -> tuple[int, int]:
+# Repair writes counters and NOTHING else.
+#
+# `first` is deliberately not order-independent in observe: it is set once, at
+# the first event PROCESSED, and the comment there explains why lowering it is
+# "a scoring decision under PREREGISTRATION.md rather than a bug fix" — it moves
+# account_newness and editor_days_known, the inputs carrying the model's margin,
+# under a champion trained on the other definition.
+#
+# A replay folds in event_ts order and therefore finds the true earliest. So a
+# repair that wrote `first` would make that change silently, as a side effect of
+# tidying a table. Counters are different in kind: a count that disagrees with
+# the events is simply wrong, and correcting it is a repair rather than a
+# redefinition. That is the line these two statements draw.
+REPAIR_EDITOR_SQL = """
+INSERT INTO landing.editor_state
+    (user_key, first_seen_utc, last_seen_utc, edits_seen, reverts_performed, edits_reverted)
+VALUES (%(key)s, %(first)s, %(last)s, %(edits)s, %(reverts)s, %(reverted)s)
+ON CONFLICT (user_key) DO UPDATE SET
+    edits_seen        = EXCLUDED.edits_seen,
+    reverts_performed = EXCLUDED.reverts_performed,
+    edits_reverted    = EXCLUDED.edits_reverted
+"""
+
+REPAIR_PAGE_SQL = """
+INSERT INTO landing.page_state
+    (page_key, first_seen_utc, last_seen_utc, edits_seen, edits_reverted)
+VALUES (%(key)s, %(first)s, %(last)s, %(edits)s, %(reverted)s)
+ON CONFLICT (page_key) DO UPDATE SET
+    edits_seen     = EXCLUDED.edits_seen,
+    edits_reverted = EXCLUDED.edits_reverted
+"""
+
+
+def persist(conn: Any, state: dict[str, Any], *, counters_only: bool = False) -> tuple[int, int]:
     editors = [
         {
             "key": key,
@@ -542,11 +575,13 @@ def persist(conn: Any, state: dict[str, Any]) -> tuple[int, int]:
         }
         for key, v in state.get("pages", {}).items()
     ]
+    editor_sql = REPAIR_EDITOR_SQL if counters_only else PERSIST_EDITOR_SQL
+    page_sql = REPAIR_PAGE_SQL if counters_only else PERSIST_PAGE_SQL
     with conn.cursor() as cur:
         if editors:
-            cur.executemany(PERSIST_EDITOR_SQL, editors)
+            cur.executemany(editor_sql, editors)
         if pages:
-            cur.executemany(PERSIST_PAGE_SQL, pages)
+            cur.executemany(page_sql, pages)
         # GREATEST, so a partial batch can never move the frontier backwards.
         # An id that has been seen has been seen.
         if state.get("max_user_id"):

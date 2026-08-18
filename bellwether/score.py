@@ -60,24 +60,51 @@ SELECT e.revid, e.old_revid, e.event_ts, e.ns, e.title, e.user_name, e.user_id,
                  WHERE r.reverted_revid = e.revid AND r.revert_ts <= now())
         OR EXISTS (SELECT 1 FROM outcome.labels l
                     WHERE l.revid = e.revid AND l.first_observed_at_utc <= now()))
-           AS outcome_already_observable
+           AS outcome_already_observable,
+
+       -- Inside the window the champion was fitted to.
+       --
+       -- Never scored — this champion is 0.686 PR-AUC in-sample against 0.256
+       -- out-of-sample, so writing those into the register that measures
+       -- out-of-sample behaviour would not be subtle contamination.
+       --
+       -- But it IS folded. Skipping the fold as well left a permanent hole in
+       -- editor and page counters: the replay folds every raw event in its
+       -- window and the online path could not, which is one of the two
+       -- directions of drift reconcile measures. Folding without scoring
+       -- closes it, and cannot contaminate anything, because no prediction is
+       -- written.
+       (e.event_ts >= %(training_start)s AND e.event_ts < %(training_end)s)
+           AS in_training_window
   FROM landing.rc_events e
  WHERE NOT EXISTS (
+           -- ANY champion, not this one.
+           --
+           -- Keyed on model_version, a promotion made every event in the
+           -- lookback window unscored again for the incoming champion, and it
+           -- back-scored them. Two things wrong with that. The register exists
+           -- to hold forecasts published BEFORE their outcome, and a model
+           -- promoted today issuing predictions for edits from three days ago
+           -- is not forecasting; it is filling in. And the state those
+           -- back-scores read had already been folded with those very events,
+           -- so each one saw itself in its own history.
+           --
+           -- Nothing is lost by dropping it: an incoming champion ran in
+           -- shadow over exactly this window and already scored these events
+           -- there, in real time, from clean state. That is the record the
+           -- promotion rule pairs on.
            SELECT 1 FROM register.predictions p
             WHERE p.revid = e.revid
-              AND p.model_version = %(model_version)s
               AND p.role = 'champion')
    AND e.event_ts >= now() - make_interval(days => %(lookback_days)s)
-   -- Never score what the champion was fitted to.
-   --
-   -- The lookback window and the training window are set independently and
-   -- nothing stopped them overlapping. Where they do, the scorer would write
-   -- predictions on edits the model has memorised into the register that exists
-   -- to measure how it does on edits it has never seen. This champion scores
-   -- 0.686 PR-AUC in-sample against 0.256 out-of-sample, so the contamination
-   -- would not be subtle. It has not happened yet only because an ingestion gap
-   -- happens to sit between the two windows, which is luck, not a guarantee.
-   AND NOT (e.event_ts >= %(training_start)s AND e.event_ts < %(training_end)s)
+   -- A training-window event is FOLDED but never SCORED, so it is selected
+   -- once and then only while it is still missing from the fold ledger.
+   -- Without the second half it would be re-read on every run forever, taking
+   -- room under the limit from events that can actually be scored.
+   AND NOT (
+         (e.event_ts >= %(training_start)s AND e.event_ts < %(training_end)s)
+         AND EXISTS (SELECT 1 FROM landing.state_applied_events s WHERE s.revid = e.revid)
+       )
  ORDER BY e.event_ts, e.revid
  LIMIT %(limit)s
 """
@@ -192,7 +219,7 @@ def run(*, limit: int = 5_000, lookback_days: int = 3) -> dict[str, Any]:
 
         with RunContext(run_id, job=JOB) as ctx, connect() as conn:
             st = state.load_for(conn, events)
-            rows, late, shadow_failed = [], 0, 0
+            rows, late, shadow_failed, in_training = [], 0, 0, 0
             now = utcnow()
 
             # Which of these are ALREADY counted in the state just loaded.
@@ -219,6 +246,18 @@ def run(*, limit: int = 5_000, lookback_days: int = 3) -> dict[str, Any]:
                 # cannot. Selecting a subset of one vector cannot disagree with
                 # itself, so the invariant survives models with different
                 # feature sets.
+                # A training-window event is folded and nothing else. The
+                # fold has to happen HERE, in event order, between reading the
+                # state and advancing it — moving it elsewhere would put these
+                # events into the wrong place in the sequence, which is the
+                # ordering the whole point-in-time guarantee rests on.
+                if event["in_training_window"]:
+                    if event["revid"] not in already:
+                        state.observe(st, event)
+                        folded.append(event["revid"])
+                        in_training += 1
+                    continue
+
                 vector = features.build(event, state.history_for(st, event))
                 base = {
                     "revid": event["revid"],
@@ -286,12 +325,20 @@ def run(*, limit: int = 5_000, lookback_days: int = 3) -> dict[str, Any]:
             ctx.rows_written = written
             ctx.partial = late > 0
 
-    lags = [(now - e["event_ts"]).total_seconds() / 60 for e in events]
+    scored_events = [e for e in events if not e["in_training_window"]]
+    if not scored_events:
+        print(f"score: {len(events):,} events folded, none scoreable (all in-training)")
+        return {"scored": 0, "model_version": version, "folded_only": len(events)}
+
+    lags = [(now - e["event_ts"]).total_seconds() / 60 for e in scored_events]
     lags.sort()
     # Rows written, not events scored: with a challenger in shadow there are two
     # per event, and reporting the total as "scored with <champion>" would
     # double the champion's apparent throughput.
-    print(f"score: {len(events):,} events, {written:,} rows, champion {version}")
+    print(
+        f"score: {len(scored_events):,} scored, {written:,} rows, champion {version}"
+        + (f", {in_training:,} folded only (in-training)" if in_training else "")
+    )
     print(f"  lag minutes: median {lags[len(lags) // 2]:.1f}  max {lags[-1]:.1f}")
     if late:
         print(

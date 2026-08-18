@@ -424,3 +424,111 @@ def test_the_ledger_survives_a_rerun_without_double_recording(
         assert state.already_folded(conn, [10, 11, 12, 13, 14]) == {10, 11, 12, 13}
         assert state.already_folded(conn, []) == set()
         assert state.record_folded(conn, []) == 0
+
+
+# ---------------------------------------------------------------------------
+# The two producers of state drift, closed at source
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.db
+def test_a_new_champion_does_not_back_score_what_a_previous_one_scored(
+    fresh_db: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The register holds forecasts, not fill-ins.
+
+    Keyed on model_version, a promotion made every event in the lookback window
+    unscored again for the incoming champion and it back-scored them. Two things
+    wrong with that: a model promoted today is not forecasting an edit from
+    three days ago, and the state those back-scores read had already been folded
+    with those very events, so each saw itself in its own history.
+
+    Nothing is lost. A challenger runs in shadow over exactly this window and
+    has already scored these events there, in real time, from clean state.
+    """
+    monkeypatch.setattr(registry, "MODELS_DIR", tmp_path)
+    first_sha = _artifact(tmp_path, "champ1", ConstantModel(0.7))
+    second_sha = _artifact(tmp_path, "champ2", ConstantModel(0.6))
+
+    with connect() as conn:
+        for revid in range(1, 4):
+            _event(conn, revid, minutes_ago=100 + revid)
+        _register(conn, "champ1", first_sha, days_ago=5)
+        conn.execute("INSERT INTO decide.champion_history (model_version) VALUES ('champ1')")
+
+    assert score.run(limit=100)["scored"] == 3
+
+    with connect() as conn:
+        _register(conn, "champ2", second_sha, days_ago=0)
+        conn.execute("INSERT INTO decide.champion_history (model_version) VALUES ('champ2')")
+
+    result = score.run(limit=100)
+    assert result.get("scored", 0) == 0, "already scored by a champion; not scored again"
+
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT model_version, count(*) AS n FROM register.predictions"
+            " WHERE role = 'champion' GROUP BY model_version"
+        ).fetchall()
+    assert {r["model_version"]: r["n"] for r in rows} == {"champ1": 3}, (
+        "one champion prediction per event, by whoever was live at the time"
+    )
+
+
+@pytest.mark.db
+def test_an_event_the_champion_may_not_score_is_still_folded(
+    fresh_db: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other direction of drift, closed.
+
+    The scorer refuses to score inside the champion's training window — right,
+    because the register measures out-of-sample behaviour. But it also never
+    FOLDED those events, while a replay folds every raw event in its window, so
+    the counters were permanently short by exactly that set.
+
+    Folding without scoring closes it and cannot contaminate anything, because
+    no prediction is written.
+    """
+    monkeypatch.setattr(registry, "MODELS_DIR", tmp_path)
+    champ_sha = _artifact(tmp_path, "champ", ConstantModel(0.7))
+
+    with connect() as conn:
+        # _register trains on NOW-9d .. NOW-8d; put one event inside that and
+        # two outside it.
+        conn.execute(
+            """
+            INSERT INTO landing.rc_events
+                (revid, event_ts, ns, title, user_name, user_id, is_anon, is_temp,
+                 is_minor, is_bot, oldlen, newlen, tags, sampling_stratum,
+                 sampling_weight, ingested_at_utc)
+            VALUES (99, %s, 0, 'Page', 'Alice', 500, false, false, false, false,
+                    100, 120, '{}', 'registered', 33.3, now())
+            """,
+            (NOW - timedelta(days=9) + timedelta(hours=1),),
+        )
+        for revid in (100, 101):
+            _event(conn, revid, minutes_ago=100 + revid)
+        _register(conn, "champ", champ_sha, days_ago=5)
+        conn.execute("INSERT INTO decide.champion_history (model_version) VALUES ('champ')")
+
+    result = score.run(limit=100, lookback_days=30)
+
+    with connect() as conn:
+        scored = conn.execute(
+            "SELECT count(*) AS n FROM register.predictions WHERE role = 'champion'"
+        ).fetchone()
+        contaminated = conn.execute(
+            "SELECT count(*) AS n FROM register.predictions WHERE revid = 99"
+        ).fetchone()
+        editor = conn.execute(
+            "SELECT edits_seen FROM landing.editor_state WHERE user_key = 'Alice'"
+        ).fetchone()
+        ledger = conn.execute(
+            "SELECT count(*) AS n FROM landing.state_applied_events WHERE revid = 99"
+        ).fetchone()
+
+    assert contaminated["n"] == 0, "an in-training edit is never scored"
+    assert scored["n"] == 2, "the two out-of-sample events are"
+    assert result["scored"] == 2
+    assert editor["edits_seen"] == 3, "but all three were folded, including the in-training one"
+    assert ledger["n"] == 1, "and the fold is recorded, so it is not selected forever"
