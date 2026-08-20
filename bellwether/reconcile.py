@@ -79,6 +79,32 @@ SELECT page_key, first_seen_utc, edits_seen, edits_reverted
  WHERE first_seen_utc >= %(window_start)s
 """
 
+# Keys with an event OLDER than the window, straight from the events.
+#
+# `first_seen_utc` cannot answer this on its own. state.observe sets an
+# editor's `first` to the first event PROCESSED and never lowers it, on
+# purpose (see state.py) — so an editor whose earliest edit is older than the
+# window can still carry a stored `first` inside it, purely because that older
+# edit arrived late. Scoping on the stored value alone therefore admitted
+# exactly the editors a windowed replay cannot count, and their replayed
+# counters came back short. That reads as the stored side being over-counted,
+# and it is not: it is the replay under-counting a history it was never shown.
+#
+# The key expressions mirror state.user_key and state.page_key exactly. Two
+# spellings of one key is how a scope silently stops matching the state it is
+# scoping.
+PREDATING_EDITORS_SQL = """
+SELECT DISTINCT coalesce(nullif(user_name, ''), '#' || coalesce(user_id, 0)::text) AS key
+  FROM landing.rc_events
+ WHERE event_ts < %(window_start)s
+"""
+
+PREDATING_PAGES_SQL = """
+SELECT DISTINCT coalesce(title, '') AS key
+  FROM landing.rc_events
+ WHERE event_ts < %(window_start)s
+"""
+
 
 def _editor_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
@@ -97,18 +123,47 @@ def _page_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def in_scope(stored: dict[str, dict[str, Any]], *, window_start: datetime) -> set[str]:
+def in_scope(
+    stored: dict[str, dict[str, Any]],
+    *,
+    window_start: datetime,
+    predating: frozenset[str],
+) -> set[str]:
     """The keys a replay over this window can speak for at all.
 
-    A key whose stored `first_seen_utc` predates the window has history the
-    replay cannot see, so the replayed counter is a strict undercount of it.
-    Both the comparison and the repair read scope from here, because the two
-    disagreeing is the failure mode that matters: judging a key the repair
-    would not fix is merely noisy, while REPAIRING a key the comparison never
-    judged writes a seven-day count over a lifetime one, silently and for
-    exactly the editors with the longest histories.
+    A key with history older than the window has counters the replay cannot
+    see, so the replayed value is a strict undercount of it. Both the
+    comparison and the repair read scope from here, because the two disagreeing
+    is the failure mode that matters: judging a key the repair would not fix is
+    merely noisy, while REPAIRING a key the comparison never judged writes a
+    seven-day count over a lifetime one, silently and for exactly the editors
+    with the longest histories.
+
+    TWO conditions, and the second is the load-bearing one.
+
+    Stored `first_seen_utc` was the whole test, and it is not a reliable
+    account of when a key was first active. `state.observe` sets an editor's
+    `first` to the first event PROCESSED and never lowers it — deliberately,
+    because that field feeds account_newness and lowering it is a scoring
+    decision rather than a bug fix. So a late-arriving old edit leaves `first`
+    sitting inside the window for an editor whose real history starts before
+    it. Those editors were admitted, the replay could not see their earlier
+    edits, and their counters came back one short — which read as the STORED
+    side being over-counted and sent the diagnosis in exactly the wrong
+    direction. Measured at 405 of 709 divergences, regenerating within four
+    hours of a clean repair.
+
+    `predating` answers the same question from the events themselves, where the
+    answer does not depend on the order anything arrived in.
+
+    Both are kept rather than the second replacing the first: raw events are
+    pruned at thirty days, so absence from `predating` also means "pruned", and
+    the stored timestamp is what still rules those keys out. Each catches what
+    the other cannot, and a key is judged only when they agree.
     """
-    return {key for key, row in stored.items() if row["first"] >= window_start}
+    return {
+        key for key, row in stored.items() if row["first"] >= window_start and key not in predating
+    }
 
 
 def scoped(replayed: dict[str, Any], *, editors: set[str], pages: set[str]) -> dict[str, Any]:
@@ -130,22 +185,38 @@ def compare(
     stored_pages: dict[str, dict[str, Any]],
     *,
     window_start: datetime,
+    predating_editors: frozenset[str] = frozenset(),
+    predating_pages: frozenset[str] = frozenset(),
 ) -> tuple[list[Divergence], dict[str, int]]:
     """Compare replayed state against what the online path persisted.
 
-    Only keys whose stored `first_seen_utc` is inside the window are judged.
-    A key the replay has never heard of is not a divergence — it is simply
-    older than the window, and saying otherwise would make the agreement rate
-    a function of how far back the job happens to look.
+    Only keys `in_scope` admits are judged — those whose entire history the
+    replay can see. A key the replay has never heard of is not a divergence: it
+    is simply older than the window, and saying otherwise would make the
+    agreement rate a function of how far back the job happens to look.
     """
     found: list[Divergence] = []
     counts = {"editors_checked": 0, "pages_checked": 0, "missing": 0, "unexpected": 0}
 
-    for kind, stored, replay_bucket, fields, builder in (
-        ("editor", stored_editors, replayed.get("editors", {}), EDITOR_FIELDS, "editors_checked"),
-        ("page", stored_pages, replayed.get("pages", {}), PAGE_FIELDS, "pages_checked"),
+    for kind, stored, replay_bucket, fields, builder, predating in (
+        (
+            "editor",
+            stored_editors,
+            replayed.get("editors", {}),
+            EDITOR_FIELDS,
+            "editors_checked",
+            predating_editors,
+        ),
+        (
+            "page",
+            stored_pages,
+            replayed.get("pages", {}),
+            PAGE_FIELDS,
+            "pages_checked",
+            predating_pages,
+        ),
     ):
-        scope = in_scope(stored, window_start=window_start)
+        scope = in_scope(stored, window_start=window_start, predating=predating)
         for key, stored_row in stored.items():
             if key not in scope:
                 continue
@@ -184,12 +255,21 @@ def run(*, days: int = WINDOW_DAYS, repair: bool = False, show: int = 15) -> dic
                 stored_editors = {r["user_key"]: _editor_row(r) for r in cur.fetchall()}
                 cur.execute(IN_WINDOW_PAGES_SQL, {"window_start": window_start})
                 stored_pages = {r["page_key"]: _page_row(r) for r in cur.fetchall()}
+                cur.execute(PREDATING_EDITORS_SQL, {"window_start": window_start})
+                predating_editors = frozenset(r["key"] for r in cur.fetchall())
+                cur.execute(PREDATING_PAGES_SQL, {"window_start": window_start})
+                predating_pages = frozenset(r["key"] for r in cur.fetchall())
                 cur.execute(FRONTIER_SQL)
                 row = cur.fetchone()
                 stored_frontier = int(row["value_bigint"]) if row and row["value_bigint"] else 0
 
             found, counts = compare(
-                result["state"], stored_editors, stored_pages, window_start=window_start
+                result["state"],
+                stored_editors,
+                stored_pages,
+                window_start=window_start,
+                predating_editors=predating_editors,
+                predating_pages=predating_pages,
             )
 
             # The frontier is global and monotone, so a windowed replay seeing a
@@ -219,8 +299,14 @@ def run(*, days: int = WINDOW_DAYS, repair: bool = False, show: int = 15) -> dic
                 # leaves them out of scope again and calls the table clean.
                 repairable = scoped(
                     result["state"],
-                    editors=in_scope(stored_editors, window_start=window_start),
-                    pages=in_scope(stored_pages, window_start=window_start),
+                    editors=in_scope(
+                        stored_editors,
+                        window_start=window_start,
+                        predating=predating_editors,
+                    ),
+                    pages=in_scope(
+                        stored_pages, window_start=window_start, predating=predating_pages
+                    ),
                 )
                 editors, pages = state.persist(conn, repairable, counters_only=True)
                 # Same reason as bellwether.state's rebuild: a repair writes the
