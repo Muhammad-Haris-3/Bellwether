@@ -157,22 +157,22 @@ def test_a_repair_leaves_keys_the_comparison_would_not_judge_alone(fresh_db: Non
     """
     now = datetime.now(UTC)
     with connect() as conn:
-        # Months of history the replay cannot see, and one recent edit that
-        # puts this editor into the replay's result anyway.
-        conn.execute(
-            """
-            INSERT INTO landing.editor_state
-                (user_key, first_seen_utc, last_seen_utc, edits_seen,
-                 reverts_performed, edits_reverted)
-            VALUES ('Veteran', %s, %s, 4321, 0, 0)
-            """,
-            (now - timedelta(days=200), now - timedelta(days=1)),
-        )
+        # One recent edit each, so both editors are in the replay's result.
         _event(conn, 1, minutes_ago=60, user="Veteran", title="Veteran page")
-        # And a genuine divergence on an in-scope key, so the repair runs.
         _event(conn, 2, minutes_ago=50, user="Newcomer", title="New page")
     _replay_and_persist()
+
     with connect() as conn:
+        # What the online path would actually hold for an editor who has been
+        # around since before the window: months of counting, and a
+        # first_seen_utc that says so. Written after the replay, because the
+        # replay is a seven-day view and would flatten it.
+        conn.execute(
+            "UPDATE landing.editor_state SET first_seen_utc = %s, edits_seen = 4321 "
+            "WHERE user_key = 'Veteran'",
+            (now - timedelta(days=200),),
+        )
+        # And a genuine divergence on an in-scope key, so the repair runs.
         conn.execute("UPDATE landing.editor_state SET edits_seen = 99 WHERE user_key = 'Newcomer'")
 
     assert reconcile.run(days=7, repair=True)["repaired"] is True
