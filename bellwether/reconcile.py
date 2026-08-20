@@ -97,6 +97,33 @@ def _page_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def in_scope(stored: dict[str, dict[str, Any]], *, window_start: datetime) -> set[str]:
+    """The keys a replay over this window can speak for at all.
+
+    A key whose stored `first_seen_utc` predates the window has history the
+    replay cannot see, so the replayed counter is a strict undercount of it.
+    Both the comparison and the repair read scope from here, because the two
+    disagreeing is the failure mode that matters: judging a key the repair
+    would not fix is merely noisy, while REPAIRING a key the comparison never
+    judged writes a seven-day count over a lifetime one, silently and for
+    exactly the editors with the longest histories.
+    """
+    return {key for key, row in stored.items() if row["first"] >= window_start}
+
+
+def scoped(replayed: dict[str, Any], *, editors: set[str], pages: set[str]) -> dict[str, Any]:
+    """The replayed state cut down to the keys a repair may write.
+
+    The frontier rides along: it is persisted through GREATEST, so it can only
+    ever move forwards and there is nothing for a window to truncate.
+    """
+    return {
+        "editors": {k: v for k, v in replayed.get("editors", {}).items() if k in editors},
+        "pages": {k: v for k, v in replayed.get("pages", {}).items() if k in pages},
+        "max_user_id": replayed.get("max_user_id", 0),
+    }
+
+
 def compare(
     replayed: dict[str, Any],
     stored_editors: dict[str, dict[str, Any]],
@@ -118,8 +145,9 @@ def compare(
         ("editor", stored_editors, replayed.get("editors", {}), EDITOR_FIELDS, "editors_checked"),
         ("page", stored_pages, replayed.get("pages", {}), PAGE_FIELDS, "pages_checked"),
     ):
+        scope = in_scope(stored, window_start=window_start)
         for key, stored_row in stored.items():
-            if stored_row["first"] < window_start:
+            if key not in scope:
                 continue
             counts[builder] += 1
             replay_row = replay_bucket.get(key)
@@ -180,10 +208,33 @@ def run(*, days: int = WINDOW_DAYS, repair: bool = False, show: int = 15) -> dic
             ctx.partial = bool(found)
 
             if repair and found:
-                editors, pages = state.persist(conn, result["state"], counters_only=True)
+                # The same scope the comparison used, and for a stronger
+                # reason. `result["state"]` holds every key with an event in
+                # the window, including editors whose stored counters were
+                # built over months — the ones the comparison deliberately
+                # refuses to judge because a windowed replay undercounts them.
+                # Writing those replayed counters would overwrite a lifetime
+                # count with a seven-day one, for exactly the editors carrying
+                # the most history, and nothing would report it: the next run
+                # leaves them out of scope again and calls the table clean.
+                repairable = scoped(
+                    result["state"],
+                    editors=in_scope(stored_editors, window_start=window_start),
+                    pages=in_scope(stored_pages, window_start=window_start),
+                )
+                editors, pages = state.persist(conn, repairable, counters_only=True)
                 # Same reason as bellwether.state's rebuild: a repair writes the
                 # replayed counters, so the ledger has to record what they now
                 # include, or the scorer folds those events again on top of it.
+                #
+                # Every replayed revid, not just the ones whose keys were
+                # rewritten. The ledger is per-event while a repair is per-key,
+                # and an event that moves an out-of-scope key too cannot be
+                # recorded for one side and not the other. Recording it costs
+                # the unrepaired side at most the single edit it had not been
+                # scored for yet; leaving it out lets that event be folded a
+                # second time into a counter that already contains it, which is
+                # the doubling this ledger exists to prevent.
                 state.record_folded(conn, result["revids"], source="replay")
                 ctx.rows_written = editors + pages
 

@@ -144,6 +144,54 @@ def test_keys_older_than_the_window_are_out_of_scope(fresh_db: None) -> None:
 
 
 @pytest.mark.db
+def test_a_repair_leaves_keys_the_comparison_would_not_judge_alone(fresh_db: None) -> None:
+    """The repair has to be scoped exactly like the comparison, and for a
+    stronger reason.
+
+    An editor active for months has a stored counter built over months. A
+    seven-day replay sees only the tail of it, which is why the comparison
+    refuses to judge that editor at all. A repair that wrote the whole replayed
+    state anyway would overwrite the lifetime count with the seven-day one —
+    for exactly the editors carrying the most history, and silently, because
+    the next run leaves them out of scope again and calls the table clean.
+    """
+    now = datetime.now(UTC)
+    with connect() as conn:
+        # One recent edit each, so both editors are in the replay's result.
+        _event(conn, 1, minutes_ago=60, user="Veteran", title="Veteran page")
+        _event(conn, 2, minutes_ago=50, user="Newcomer", title="New page")
+    _replay_and_persist()
+
+    with connect() as conn:
+        # What the online path would actually hold for an editor who has been
+        # around since before the window: months of counting, and a
+        # first_seen_utc that says so. Written after the replay, because the
+        # replay is a seven-day view and would flatten it.
+        conn.execute(
+            "UPDATE landing.editor_state SET first_seen_utc = %s, edits_seen = 4321 "
+            "WHERE user_key = 'Veteran'",
+            (now - timedelta(days=200),),
+        )
+        # And a genuine divergence on an in-scope key, so the repair runs.
+        conn.execute("UPDATE landing.editor_state SET edits_seen = 99 WHERE user_key = 'Newcomer'")
+
+    assert reconcile.run(days=7, repair=True)["repaired"] is True
+
+    with connect() as conn:
+        veteran = conn.execute(
+            "SELECT edits_seen FROM landing.editor_state WHERE user_key = 'Veteran'"
+        ).fetchone()
+        newcomer = conn.execute(
+            "SELECT edits_seen FROM landing.editor_state WHERE user_key = 'Newcomer'"
+        ).fetchone()
+
+    assert veteran is not None and veteran["edits_seen"] == 4321, (
+        "the repair truncated a lifetime counter to the replay window"
+    )
+    assert newcomer is not None and newcomer["edits_seen"] == 1
+
+
+@pytest.mark.db
 def test_the_online_path_cannot_maintain_the_revert_counters(fresh_db: None) -> None:
     """The defect this job exists to surface.
 
