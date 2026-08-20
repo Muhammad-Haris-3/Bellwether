@@ -447,3 +447,84 @@ def test_a_pre_migration_row_is_never_retried(fresh_db: None) -> None:
             "SELECT edits_reverted FROM landing.editor_state WHERE user_key = 'Alice'"
         ).fetchone()
     assert row["edits_reverted"] == 0, "not re-applied on top of whatever it already did"
+
+
+# --- scope, when first_seen_utc is not the first time anything happened ------
+#
+# `in_scope` and `compare` are pure, so the bug that produced 405 of 709
+# divergences on 2026-08-20 can be reproduced without a database.
+
+
+def _stored_editor(first: datetime, **counters: Any) -> dict[str, Any]:
+    return {
+        "edits": counters.get("edits", 3),
+        "reverts_performed": counters.get("reverts_performed", 0),
+        "edits_reverted": counters.get("edits_reverted", 0),
+        "first": first,
+    }
+
+
+def test_a_late_arriving_old_edit_does_not_drag_a_key_into_scope() -> None:
+    """The bug this pair of conditions exists for.
+
+    `state.observe` sets an editor's `first` to the first event PROCESSED and
+    never lowers it — deliberately, because that field feeds account_newness.
+    So an editor active well before the window can carry a stored `first`
+    INSIDE it, purely because their older edit arrived late.
+
+    Scoping on the stored timestamp alone admitted exactly those editors, and a
+    windowed replay cannot see the edits they made before it. Their replayed
+    counters came back short, which reads as the stored side being
+    over-counted — sending the diagnosis in precisely the wrong direction.
+    """
+    window_start = datetime(2026, 8, 13, tzinfo=UTC)
+    stored = {
+        "Veteran": _stored_editor(window_start + timedelta(hours=6)),
+        "Newcomer": _stored_editor(window_start + timedelta(hours=6)),
+    }
+
+    # Identical stored rows. The events are what tell them apart.
+    scope = reconcile.in_scope(stored, window_start=window_start, predating=frozenset({"Veteran"}))
+
+    assert scope == {"Newcomer"}, "an editor with edits older than the window cannot be judged"
+
+
+def test_a_key_the_events_clear_is_still_ruled_out_by_a_stored_timestamp() -> None:
+    """Both conditions are kept because each catches what the other cannot.
+
+    Raw events are pruned at thirty days, so absence from `predating` also
+    means "pruned rather than absent". The stored timestamp is what still rules
+    those keys out.
+    """
+    window_start = datetime(2026, 8, 13, tzinfo=UTC)
+    stored = {"LongGone": _stored_editor(window_start - timedelta(days=20))}
+
+    assert reconcile.in_scope(stored, window_start=window_start, predating=frozenset()) == set()
+
+
+def test_an_undercounted_replay_is_not_reported_as_an_over_count() -> None:
+    """End to end over compare(), in the shape the production logs showed:
+    every counter one higher on the stored side."""
+    window_start = datetime(2026, 8, 13, tzinfo=UTC)
+    seen = window_start + timedelta(hours=6)
+    stored_editors = {"Veteran": _stored_editor(seen, edits=8, edits_reverted=3)}
+    # What a seven-day replay sees, having missed the earlier edits.
+    replayed = {
+        "editors": {
+            "Veteran": {"edits": 7, "reverts_performed": 0, "edits_reverted": 2, "first": seen}
+        },
+        "pages": {},
+    }
+
+    unscoped, _ = reconcile.compare(replayed, stored_editors, {}, window_start=window_start)
+    assert len(unscoped) == 2, "the old behaviour: two counters that look over-counted"
+
+    found, counts = reconcile.compare(
+        replayed,
+        stored_editors,
+        {},
+        window_start=window_start,
+        predating_editors=frozenset({"Veteran"}),
+    )
+    assert found == [], "the key is simply not one this window can speak for"
+    assert counts["editors_checked"] == 0
