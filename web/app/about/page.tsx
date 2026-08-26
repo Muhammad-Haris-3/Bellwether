@@ -176,6 +176,125 @@ export default function AboutPage() {
       </ScrollReveal>
 
       <ScrollReveal>
+        <h2>How to read the numbers</h2>
+        <p className="lead">
+          Every figure on the Performance page is three things: a score, something
+          to compare it against, and a range. The score on its own is the least
+          useful of the three.
+        </p>
+
+        <div className="about-grid">
+          <div className="about-card">
+            <h3>1. A score alone means nothing</h3>
+            <p>
+              You will see numbers like <code>0.22</code>. That is not a
+              percentage and it is not a grade. Bad edits are rare &mdash; about
+              nine in a hundred here &mdash; and finding rare things is hard, so
+              even a good ranker scores low on this scale. Ignore it until you
+              have something to hold it against.
+            </p>
+          </div>
+          <div className="about-card">
+            <h3>2. The gap is the answer</h3>
+            <p>
+              Every score sits beside a comparison, and the difference between
+              them is the only part that answers a question. Positive means this
+              system did better than the thing it was compared with. Negative
+              means it did worse. That one number is what to read.
+            </p>
+          </div>
+          <div className="about-card">
+            <h3>3. The bracket says whether to believe it</h3>
+            <p>
+              Each gap carries a range in brackets. If the whole range sits on one
+              side of zero, the result is real. If the range crosses zero, the
+              honest answer is <em>too close to call</em> &mdash; however good the
+              middle number looks. This is the step most people skip.
+            </p>
+          </div>
+        </div>
+
+        <h3>Worked example</h3>
+        <p>
+          Here are the two comparisons as they stood on 26 August 2026, read the
+          way described above. The live versions are on the{" "}
+          <Link href="/metrics">Performance</Link> page.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Compared against</th>
+              <th>Gap</th>
+              <th>Range</th>
+              <th>How to read it</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                A simple rule &mdash; &ldquo;suspect anyone not logged in&rdquo;
+              </td>
+              <td className="ok">+0.052</td>
+              <td>
+                <code>+0.047 to +0.057</code>
+              </td>
+              <td>
+                The whole range is above zero, so this is real. The model earns
+                its place: it beats the obvious shortcut, and not by luck.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                Wikipedia&rsquo;s own model, on the same edits
+              </td>
+              <td className="warn">&minus;0.014</td>
+              <td>
+                <code>&minus;0.092 to +0.079</code>
+              </td>
+              <td>
+                The range crosses zero, so this is a draw. Theirs is slightly
+                ahead in the middle, but not by enough to claim anything either
+                way yet.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p className="note">
+          The second row is the one the project cares about most, and it was
+          predicted in writing before any model existed here: Wikipedia&rsquo;s
+          production model was expected to win. It is published whichever way it
+          falls, and right now it falls on &ldquo;level, on the evidence so
+          far&rdquo;.
+        </p>
+
+        <h3>So is it any good?</h3>
+        <p>
+          On the evidence above: yes, with a limit. It clearly beats the simple
+          shortcut, which is the bar that decides whether the model is worth
+          running at all. Against a professionally maintained model it is
+          currently level rather than ahead &mdash; and the sample is still small
+          enough that this could move in either direction.
+        </p>
+        <p>
+          Two habits will keep you from misreading anything here. Check the sample
+          size beside a figure before trusting it, and check the range before
+          repeating it. A number measured on a few hundred events is a hint, not a
+          finding.
+        </p>
+
+        <div className="callout">
+          <strong>A red job is not always bad news.</strong> On the{" "}
+          <Link href="/">Status</Link> page some jobs are designed to fail loudly.
+          The one that checks whether the stored numbers can be rebuilt from
+          scratch refuses to quietly correct what it finds, because silently
+          fixing a problem removes the only evidence that something is causing it.
+          Red there means &ldquo;a difference was found and is being reported&rdquo;,
+          not &ldquo;the site is broken&rdquo;. What matters is whether the number
+          beside it is falling.
+        </div>
+      </ScrollReveal>
+
+      <ScrollReveal>
         <h2>One thing worth knowing before you read a number</h2>
         <p>
           This system treats &ldquo;the edit was undone&rdquo; as meaning
