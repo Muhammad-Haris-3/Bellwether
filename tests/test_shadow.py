@@ -16,7 +16,12 @@ import pytest
 from bellwether import features, registry, score
 from bellwether.db import connect
 
-NOW = datetime(2026, 8, 14, 12, tzinfo=UTC)
+# The real clock, not a pinned date. The scorer looks back from now(), so an
+# event placed relative to a fixed date drifts out of its lookback as the
+# calendar moves: pinned to 2026-08-14, the in-training event below fell outside
+# the thirty-day window on 2026-09-04 and this suite went red with no code
+# change behind it.
+NOW = datetime.now(UTC)
 
 
 class ConstantModel:
