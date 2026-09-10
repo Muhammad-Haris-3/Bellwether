@@ -39,6 +39,7 @@ import psycopg
 
 from bellwether.config import get_settings
 from bellwether.db import connect
+from bellwether.retention import database_bytes
 from bellwether.schema import missing
 from bellwether.usage import DECLINE_FRACTION, budget_status, record_on_exit
 
@@ -202,6 +203,24 @@ def check(conn: Any, *, deployed_build: str | None = None) -> list[Fault]:
             )
     except Exception as exc:  # noqa: BLE001 — bookkeeping must not disable the watchdog
         print(f"watchdog: transfer budget unavailable ({type(exc).__name__})")
+
+    # --- storage (NFR-4) ---------------------------------------------------
+    #
+    # The transfer check's twin, and the one that actually fired. Retention
+    # printed "WARNING above 80 percent of budget" for five days in a log nobody
+    # reads, and on 2026-09-10 Neon refused every write — which surfaced as score
+    # and apply_reverts failing, jobs with nothing wrong in them.
+    used = database_bytes(conn)
+    budget_bytes = get_settings().storage_budget_bytes
+    if budget_bytes and used > budget_bytes:
+        faults.append(
+            Fault(
+                "storage",
+                f"the database is {used / 1e6:.0f} MB, past its {budget_bytes / 1e6:.0f} MB "
+                "budget. Neon refuses every write at 512 MB, and the first sign of that is "
+                "ingestion failing for reasons that look nothing like storage",
+            )
+        )
 
     # --- the running build (M8-FR-18) --------------------------------------
     #

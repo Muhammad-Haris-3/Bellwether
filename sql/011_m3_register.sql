@@ -66,8 +66,7 @@ CREATE TABLE IF NOT EXISTS register.predictions (
 
 CREATE INDEX IF NOT EXISTS predictions_event_ts_idx  ON register.predictions (event_ts);
 CREATE INDEX IF NOT EXISTS predictions_scored_at_idx ON register.predictions (scored_at);
-CREATE INDEX IF NOT EXISTS predictions_role_model_idx
-    ON register.predictions (role, model_version, event_ts);
+-- predictions_role_model_idx was created here; dropped in sql/034 (29 MB, unread).
 
 
 -- ---------------------------------------------------------------------------

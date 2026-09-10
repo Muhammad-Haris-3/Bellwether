@@ -50,6 +50,11 @@ def _column(schema: str, table: str, column: str) -> str:
 # time later. This makes the question "which migration does this database
 # actually have" answerable from outside, in one request.
 SCHEMA_EXPECTATIONS = {
+    "034_m9_storage_headroom": (
+        "SELECT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace"
+        "                WHERE n.nspname = 'landing' AND p.proname = 'prune_bookkeeping')"
+        " AS present"
+    ),
     "033_m9_revert_retry": (
         "SELECT EXISTS (SELECT 1 FROM information_schema.columns"
         "                WHERE table_schema = 'landing'"

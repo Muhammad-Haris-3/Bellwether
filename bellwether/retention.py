@@ -42,14 +42,17 @@ SELECT target, rows_affected
        p_cohort_days   => %(cohort_days)s)
 """
 
-SIZE_SQL = """
-SELECT pg_size_pretty(sum(pg_total_relation_size(c.oid))) AS pretty,
-       sum(pg_total_relation_size(c.oid))                 AS bytes
-  FROM pg_class c
-  JOIN pg_namespace n ON n.oid = c.relnamespace
- WHERE n.nspname IN ('landing', 'outcome')
-   AND c.relkind = 'r'
+PRUNE_BOOKKEEPING_SQL = """
+SELECT target, rows_affected
+  FROM landing.prune_bookkeeping(p_dry_run => %(dry_run)s, p_raw_days => %(raw_days)s)
 """
+
+# What Neon caps: every database on the project, system ones included.
+#
+# This summed two schemas of six, excluding register — the second-largest table
+# — and every database but ours. On 2026-09-09 it reported 369 MB, "92% of
+# budget", while Neon counted ~512 MB; the next day it refused every write.
+SIZE_SQL = "SELECT sum(pg_database_size(oid)) AS bytes FROM pg_database"
 
 
 def database_bytes(conn: Any) -> int:
@@ -79,6 +82,11 @@ def run(*, dry_run: bool = True) -> dict[str, Any]:
                     },
                 )
                 results = {row["target"]: int(row["rows_affected"]) for row in cur.fetchall()}
+                cur.execute(
+                    PRUNE_BOOKKEEPING_SQL,
+                    {"dry_run": dry_run, "raw_days": settings.raw_retention_days},
+                )
+                results |= {row["target"]: int(row["rows_affected"]) for row in cur.fetchall()}
             after = database_bytes(conn)
             run_ctx.rows_written = sum(results.values())
             run_ctx.partial = dry_run

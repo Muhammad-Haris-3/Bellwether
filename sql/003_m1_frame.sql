@@ -62,8 +62,7 @@ UPDATE landing.rc_events e
 -- ---------------------------------------------------------------------------
 DROP INDEX IF EXISTS landing.rc_events_event_ts_revid_idx;
 
-CREATE INDEX IF NOT EXISTS rc_events_tag_ids_gin_idx
-    ON landing.rc_events USING gin (tag_ids);
+-- rc_events_tag_ids_gin_idx was created here; dropped in sql/034 (never scanned).
 
 -- Supports the labelling queue, which selects by age among events not yet
 -- checked, and now also splits on cohort membership.

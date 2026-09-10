@@ -331,3 +331,77 @@ def test_pruning_covers_every_table_it_is_supposed_to(fresh_db: None) -> None:
         "register.predictions",
         "app.sessions",
     }
+
+
+# ---------------------------------------------------------------------------
+# Storage headroom (sql/034)
+# ---------------------------------------------------------------------------
+
+
+def _bookkeeping(conn: Any, revid: int, days_ago: float) -> None:
+    for sql in (
+        "INSERT INTO landing.state_applied_events (revid, applied_at_utc)"
+        " VALUES (%s, now() - make_interval(days => %s))",
+        "INSERT INTO landing.state_applied_reverts (revid, applied_at_utc)"
+        " VALUES (%s, now() - make_interval(days => %s))",
+        "INSERT INTO outcome.revert_events (revert_revid, reverted_revid, revert_ts, method)"
+        " VALUES (%s, %s - 1, now() - make_interval(days => %s), 'mw-undo')",
+    ):
+        args = (revid, revid, days_ago) if "revert_events" in sql else (revid, days_ago)
+        conn.execute(sql, args)
+
+
+def _prune_bookkeeping(conn: Any, *, dry_run: bool) -> dict[str, int]:
+    rows = conn.execute(
+        "SELECT target, rows_affected FROM landing.prune_bookkeeping(%s, 30)", (dry_run,)
+    ).fetchall()
+    return {r["target"]: int(r["rows_affected"]) for r in rows}
+
+
+def test_bookkeeping_ages_out_a_week_behind_the_raw_edits(fresh_db: None) -> None:
+    """The ledgers and revert_events were written every run and pruned by
+    nothing, ~1.5 MB a day. Past the raw horizon plus a week the edit they
+    describe is gone and cannot come back to be folded twice."""
+    with connect() as conn:
+        _bookkeeping(conn, 100, days_ago=40)  # past 30 + 7
+        _bookkeeping(conn, 200, days_ago=33)  # past raw, inside the margin
+
+    with connect() as conn:
+        assert set(_prune_bookkeeping(conn, dry_run=True).values()) == {1}
+    with connect() as conn:
+        conn.execute("SET ROLE bellwether_writer")
+        assert set(_prune_bookkeeping(conn, dry_run=False).values()) == {1}
+
+    with connect() as conn:
+        for table, key in (
+            ("landing.state_applied_events", "revid"),
+            ("landing.state_applied_reverts", "revid"),
+            ("outcome.revert_events", "revert_revid"),
+        ):
+            kept = [r[key] for r in conn.execute(f"SELECT {key} FROM {table}").fetchall()]  # noqa: S608
+            assert kept == [200], f"{table} kept {kept}"
+
+
+def test_nothing_chains_evidence_to_the_raw_edits(fresh_db: None) -> None:
+    """M1-FR-10. Evidence outlives rc_events, so no foreign key may point at it.
+
+    sql/003 dropped the ones from labels and label_checks; sql/022 added one from
+    app.human_labels that nothing dropped. The first reviewed edit to turn thirty
+    days old would have failed the whole rc_events prune."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT conrelid::regclass::text AS t FROM pg_constraint"
+            " WHERE contype = 'f' AND confrelid = 'landing.rc_events'::regclass"
+        ).fetchall()
+    assert [r["t"] for r in rows] == []
+
+
+def test_storage_is_measured_the_way_neon_caps_it(fresh_db: None) -> None:
+    """Every database on the server, not two schemas of one. The old figure left
+    out register and the system databases, and read 369 MB the day before the
+    project hit its 512 MB cap."""
+    with connect() as conn:
+        everything = conn.execute(
+            "SELECT sum(pg_database_size(oid)) AS b FROM pg_database"
+        ).fetchone()["b"]
+        assert retention.database_bytes(conn) == everything

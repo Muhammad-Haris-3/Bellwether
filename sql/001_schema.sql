@@ -162,8 +162,8 @@ CREATE TABLE IF NOT EXISTS outcome.label_checks (
     CONSTRAINT label_checks_one_per_checkpoint UNIQUE (revid, checkpoint_seconds)
 );
 
-CREATE INDEX IF NOT EXISTS label_checks_revid_idx
-    ON outcome.label_checks (revid);
+-- label_checks_revid_idx was created here; dropped in sql/034. The unique
+-- (revid, checkpoint_seconds) index above already leads on revid.
 
 
 -- ---------------------------------------------------------------------------
@@ -202,5 +202,6 @@ CREATE TABLE IF NOT EXISTS outcome.labels (
     CONSTRAINT labels_one_per_source UNIQUE (revid, label_source)
 );
 
-CREATE INDEX IF NOT EXISTS labels_revid_idx  ON outcome.labels (revid);
+-- labels_revid_idx was created here; dropped in sql/034. The unique
+-- (revid, label_source) index above already leads on revid.
 CREATE INDEX IF NOT EXISTS labels_source_idx ON outcome.labels (label_source, label);

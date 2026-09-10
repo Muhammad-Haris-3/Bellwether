@@ -30,8 +30,7 @@
 ALTER TABLE outcome.revert_events
     ADD COLUMN IF NOT EXISTS revert_user_id bigint;
 
-CREATE INDEX IF NOT EXISTS revert_events_user_idx
-    ON outcome.revert_events (revert_user_id, revert_ts);
+-- revert_events_user_idx was created here; dropped in sql/034 (never scanned).
 
 
 -- ---------------------------------------------------------------------------

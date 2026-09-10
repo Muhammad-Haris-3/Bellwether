@@ -125,7 +125,15 @@ class Settings(BaseSettings):
     # Evidence — labels now, predictions from M3 — outlives the raw material,
     # but not indefinitely as SRS 6.5 assumed. It is sealed monthly into git
     # first, so the proof survives the rows (M1 section 6).
-    evidence_retention_days: int = 90
+    #
+    # 30, the floor prune_expired enforces, and down from 90. Measured on
+    # 2026-09-10, predictions and labels grow ~7 MB a day between them, so 90
+    # days of evidence alone is ~600 MB against a 512 MB project — the database
+    # filled and refused every write before the first evidence row was old
+    # enough to prune. Metrics join predictions to rc_events, so evidence kept
+    # past the raw window was never graded again anyway; only the seal needs it,
+    # and the seal is already in git.
+    evidence_retention_days: int = 30
 
     # The maturity cohort's checkpoint grid is the survival study M2 estimates
     # from. It is a tenth of the volume, so it can afford six months.

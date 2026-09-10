@@ -232,3 +232,18 @@ def test_the_wording_may_change_without_becoming_a_different_fault(fresh_db: Non
     assert any("12345 minutes ago" in message for message in result["standing"]), (
         "the report carries the current number, not the one it opened with"
     )
+
+
+@pytest.mark.db
+def test_a_database_past_its_storage_budget_is_a_fault(
+    fresh_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retention warned for five days in a log line; then Neon refused every
+    write and it surfaced as score failing. The warning belongs here."""
+    monkeypatch.setenv("BELLWETHER_STORAGE_BUDGET_BYTES", "1")
+    from bellwether.config import get_settings
+
+    get_settings.cache_clear()
+    with connect() as conn:
+        faults = watchdog.check(conn)
+    assert "storage" in {f.key for f in faults}
