@@ -57,6 +57,9 @@ POPULATIONS: dict[str, int] = {
 
 WINDOWS: dict[str, int | None] = {"7d": 7, "30d": 30, "all": None}
 
+# The start of the "all" window: before any row this project holds.
+EARLIEST = datetime(2000, 1, 1, tzinfo=UTC)
+
 CALIBRATION_BINS = 10
 
 # The aggregate keeps the 2,000 resamples KC-2 was decided with, so the live
@@ -411,8 +414,30 @@ def run(*, maturity: dict[str, int] | None = None) -> dict[str, Any]:
 
             for population, maturity_seconds in (maturity or POPULATIONS).items():
                 cohort_only = population == "maturity_cohort"
+
+                # One fetch per population, not one per window.
+                #
+                # The windows are nested — 7d inside 30d inside all — and with
+                # rc_events kept thirty days, "30d" and "all" were the same rows
+                # read out twice. Each narrower window is the suffix of this one
+                # by scored_at, and now() is fixed for the transaction, so
+                # filtering here returns exactly what its own query did. metrics
+                # was a third of the transfer that paused the project on
+                # 2026-09-10.
+                with conn.cursor() as cur:
+                    cur.execute(
+                        MATURED_SQL,
+                        {
+                            "maturity": maturity_seconds,
+                            "window_start": EARLIEST,
+                            "cohort_only": cohort_only,
+                        },
+                    )
+                    everything = cur.fetchall()
+
                 for label, days in WINDOWS.items():
-                    start = now - timedelta(days=days) if days else datetime(2000, 1, 1, tzinfo=UTC)
+                    start = now - timedelta(days=days) if days else EARLIEST
+                    matured = [r for r in everything if r["scored_at"] >= start]
 
                     with conn.cursor() as cur:
                         scope = {
@@ -420,8 +445,6 @@ def run(*, maturity: dict[str, int] | None = None) -> dict[str, Any]:
                             "window_start": start,
                             "cohort_only": cohort_only,
                         }
-                        cur.execute(MATURED_SQL, scope)
-                        matured = cur.fetchall()
                         cur.execute(EXCLUSIONS_SQL, scope)
                         excl = cur.fetchone() or {}
 

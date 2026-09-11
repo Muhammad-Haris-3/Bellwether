@@ -1,6 +1,10 @@
 name: Reconcile
 
-# Daily.
+# Weekly — which, over a seven-day window, still replays every day once.
+#
+# Daily until 2026-09-10, when Neon paused the project for spending its monthly
+# transfer allowance: six days of every daily replay were the same rows read out
+# again. Drift is now found within a week rather than a day.
 #
 # Replays the last seven days and asserts that it reproduces the state the
 # online path persisted, one ten-minute batch at a time (M3-FR-12).
@@ -16,7 +20,7 @@ name: Reconcile
 # and decide, which is the whole point.
 on:
   schedule:
-    - cron: "23 4 * * *"
+    - cron: "23 4 * * 0"
   workflow_dispatch:
     inputs:
       days:

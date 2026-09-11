@@ -19,9 +19,11 @@ SCHEDULED = {
     "ingest.yml": "*/10 * * * *",
     "label.yml": "*/30 * * * *",
     "maintain.yml": "17 3 * * *",
-    "reconcile.yml": "23 4 * * *",
-    "reproduce.yml": "19 5 * * *",
-    "metrics.yml": "7 */6 * * *",
+    # Weekly and daily since 2026-09-10: the three largest readers of a
+    # transfer allowance that paused the project. See each workflow's header.
+    "reconcile.yml": "23 4 * * 0",
+    "reproduce.yml": "19 5 * * 0",
+    "metrics.yml": "7 0 * * *",
     "liftwing.yml": "41 7 * * *",
     "triggers.yml": "31 6 * * *",
     "decide.yml": "13 8 * * *",

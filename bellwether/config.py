@@ -144,6 +144,11 @@ class Settings(BaseSettings):
     # against a number in a document nobody re-reads.
     storage_budget_bytes: int = 400_000_000
 
+    # Where a job may keep what it computed from the database, so the next run
+    # need not read it out again. Set by workflows that persist it with
+    # actions/cache; unset, nothing is kept and every run reads afresh.
+    cache_dir: str | None = None
+
     # Neon Free also meters DATA TRANSFER — bytes read out of the database —
     # and that allowance is a separate one from storage with a separate failure
     # mode. Storage running out refuses writes; transfer running out refuses

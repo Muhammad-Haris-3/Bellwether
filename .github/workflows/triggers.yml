@@ -47,9 +47,21 @@ jobs:
     env:
       BELLWETHER_DATABASE_URL: ${{ secrets.BELLWETHER_DATABASE_URL }}
       BELLWETHER_ENV: production
+      BELLWETHER_CACHE_DIR: .cache/drift-reference
 
     steps:
       - uses: actions/checkout@v5
+
+      # The drift reference, built once per champion instead of re-read from the
+      # database every day (bellwether/triggers.py, _reference_columns). Keyed on
+      # the code that builds it, so a change to how features are built starts
+      # afresh rather than comparing against a reference the new builder would
+      # not produce. A new key each run, so what this run adds is saved.
+      - uses: actions/cache@v4
+        with:
+          path: .cache/drift-reference
+          key: drift-reference-${{ hashFiles('bellwether/features.py', 'bellwether/state.py', 'bellwether/triggers.py') }}-${{ github.run_id }}
+          restore-keys: drift-reference-${{ hashFiles('bellwether/features.py', 'bellwether/state.py', 'bellwether/triggers.py') }}-
 
       - uses: actions/setup-python@v6
         with:

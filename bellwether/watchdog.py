@@ -73,7 +73,8 @@ SILENCE_MINUTES = {
     "score": 60,
     "label": 150,
     "label_secondary": 150,
-    "metrics": 24 * 60,
+    # Daily since 2026-09-10 (it was six-hourly), so the same margin as triggers.
+    "metrics": 36 * 60,
     "triggers": 36 * 60,
 }
 
