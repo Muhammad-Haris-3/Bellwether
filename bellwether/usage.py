@@ -36,8 +36,7 @@ from __future__ import annotations
 import argparse
 import uuid
 from collections.abc import Iterable, Sequence
-from datetime import UTC, date, datetime, time
-from decimal import Decimal
+from datetime import UTC, datetime
 from typing import Any
 
 from bellwether.config import get_settings
@@ -71,21 +70,19 @@ def value_width(value: Any) -> int:
     if value is None:
         return FIELD_OVERHEAD_BYTES
     if isinstance(value, bool):
-        return FIELD_OVERHEAD_BYTES + 1
-    if isinstance(value, int):
-        return FIELD_OVERHEAD_BYTES + 8
-    if isinstance(value, float):
-        return FIELD_OVERHEAD_BYTES + 8
+        return FIELD_OVERHEAD_BYTES + 1  # 't' or 'f'
     if isinstance(value, bytes | bytearray | memoryview):
-        return FIELD_OVERHEAD_BYTES + len(value)
-    if isinstance(value, str):
-        return FIELD_OVERHEAD_BYTES + len(value.encode("utf-8"))
-    if isinstance(value, datetime | date | time):
-        return FIELD_OVERHEAD_BYTES + 8
-    if isinstance(value, Decimal):
-        return FIELD_OVERHEAD_BYTES + len(str(value))
-    if isinstance(value, uuid.UUID):
-        return FIELD_OVERHEAD_BYTES + 16
+        return FIELD_OVERHEAD_BYTES + 2 + 2 * len(value)  # bytea arrives hex: \x...
+    # Everything else as TEXT, because that is how it arrives: psycopg reads
+    # results in the text protocol unless asked otherwise, and nothing here asks.
+    #
+    # This counted binary widths — 8 for a timestamp, 8 for a float, 16 for a
+    # uuid. A timestamptz is ~29 characters on the wire, a float ~18, a uuid 36.
+    # On 2026-09-09 the meter read 2.1 GB, 41% of the allowance, and Neon paused
+    # the project the next day: an alarm at 80% of that figure could not have
+    # fired before the thing it warned about. Modelling the encoding actually in
+    # use is not tuning to the console; the old figure measured a protocol this
+    # project does not speak.
     return FIELD_OVERHEAD_BYTES + len(str(value).encode("utf-8"))
 
 

@@ -260,3 +260,14 @@ def test_human_bytes_scales():
 def test_human_bytes_does_not_run_out_of_units():
     """An oversized figure must render rather than raise."""
     assert "GB" in human_bytes(9 * 1024**5)
+
+
+def test_values_are_counted_as_the_text_they_arrive_as():
+    """psycopg reads results in the text protocol. Counting binary widths put a
+    timestamp at 8 bytes against ~29 on the wire, and the meter read 41% of the
+    allowance the day before Neon paused the project for exhausting it."""
+    stamp = datetime(2026, 8, 13, 21, 50, 3, 100990, tzinfo=UTC)
+    assert value_width(stamp) >= FIELD_OVERHEAD_BYTES + 25
+    assert value_width(0.4231234512345678) >= FIELD_OVERHEAD_BYTES + 17
+    assert value_width(uuid.uuid4()) == FIELD_OVERHEAD_BYTES + 36
+    assert value_width(True) == FIELD_OVERHEAD_BYTES + 1, "a boolean is sent as one character"
