@@ -52,6 +52,26 @@ jobs:
       - name: Verify the previous month against its committed seal
         run: python -m bellwether.seal --verify
 
+      # The rows leave the database before retention may touch them. Read-only,
+      # so it still works on a database too full to seal — which is exactly when
+      # it mattered on 2026-09-10. Retention refuses unexported months on its
+      # own as well (bellwether/export.py), so this ordering is not the only
+      # guard. A month sealed below is exported on the next run.
+      - name: Export sealed months
+        run: python -m bellwether.export
+
+      - name: Commit the export
+        run: |
+          if [ -z "$(git status --porcelain exports/)" ]; then
+            echo "nothing new to export"
+            exit 0
+          fi
+          git config user.name  "bellwether-bot"
+          git config user.email "noreply@github.com"
+          git add exports/
+          git commit -m "Export sealed evidence"
+          git push
+
       - name: Seal the previous month
         run: python -m bellwether.seal
 

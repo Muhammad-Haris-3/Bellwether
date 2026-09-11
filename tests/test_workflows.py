@@ -120,6 +120,10 @@ def test_maintenance_seals_before_it_prunes() -> None:
 
     assert verify < seal < commit < prune
 
+    export = next(i for i, n in enumerate(steps) if n == "Export sealed months")
+    committed = next(i for i, n in enumerate(steps) if n == "Commit the export")
+    assert export < committed < prune, "rows leave the database before retention runs"
+
 
 def test_retention_does_not_delete_on_a_manual_run_by_default() -> None:
     """`inputs.apply` is the empty string on a scheduled run, so a negative

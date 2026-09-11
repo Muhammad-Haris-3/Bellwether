@@ -29,6 +29,7 @@ import argparse
 import hashlib
 import json
 import sys
+from collections.abc import Iterable, Iterator, Mapping
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -97,34 +98,48 @@ def previous_month(today: date | None = None) -> date:
     return (first - timedelta(days=1)).replace(day=1)
 
 
-def compute_digest(conn: Any, month: date) -> tuple[str, dict[str, int]]:
-    """Hash every sealed row for a month, in a fixed order.
+def sealed_lines(conn: Any, month: date, table: str) -> Iterator[str]:
+    """One table's sealed rows for a month, each rendered exactly as it is hashed.
 
     Values are rendered with repr-free, locale-free formatting and joined with
     a unit separator, so the digest depends on the data and nothing else.
+
+    Shared with bellwether.export, which writes these same lines out. Two
+    renderings of one row would let an export disagree with its seal for a
+    reason that has nothing to do with the data.
     """
+    spec = SEALED[table]
     start, end = month_bounds(month)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT {spec['columns']} FROM {table} "  # noqa: S608
+            f"WHERE {spec['time_column']} >= %s AND {spec['time_column']} < %s "
+            f"ORDER BY {spec['order_by']}",
+            (start, end),
+        )
+        for row in cur:
+            yield "\x1f".join("" if value is None else str(value) for value in row.values())
+
+
+def digest_of(lines_by_table: Mapping[str, Iterable[str]]) -> tuple[str, dict[str, int]]:
+    """The seal digest over already-rendered lines. Needs no database, which is
+    what lets an export be checked by someone with only the repository."""
     hasher = hashlib.sha256()
     counts: dict[str, int] = {}
-
-    for table, spec in sorted(SEALED.items()):
+    for table in sorted(lines_by_table):
         hasher.update(f"\x1e{table}\x1e".encode())
         rows = 0
-        with conn.cursor() as cur:
-            cur.execute(
-                f"SELECT {spec['columns']} FROM {table} "  # noqa: S608
-                f"WHERE {spec['time_column']} >= %s AND {spec['time_column']} < %s "
-                f"ORDER BY {spec['order_by']}",
-                (start, end),
-            )
-            for row in cur:
-                rows += 1
-                line = "\x1f".join("" if value is None else str(value) for value in row.values())
-                hasher.update(line.encode("utf-8"))
-                hasher.update(b"\x1e")
+        for line in lines_by_table[table]:
+            rows += 1
+            hasher.update(line.encode("utf-8"))
+            hasher.update(b"\x1e")
         counts[table] = rows
-
     return hasher.hexdigest(), counts
+
+
+def compute_digest(conn: Any, month: date) -> tuple[str, dict[str, int]]:
+    """Hash every sealed row for a month, in a fixed order."""
+    return digest_of({table: sealed_lines(conn, month, table) for table in SEALED})
 
 
 def seal_month(month: date, *, write: bool = True) -> dict[str, Any]:

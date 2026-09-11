@@ -27,6 +27,7 @@ from typing import Any
 
 from bellwether.config import get_settings
 from bellwether.db import advisory_lock, connect
+from bellwether.export import protected_evidence_days
 from bellwether.runlog import RunContext, new_run_id
 from bellwether.usage import record_on_exit
 
@@ -77,7 +78,9 @@ def run(*, dry_run: bool = True) -> dict[str, Any]:
                     {
                         "dry_run": dry_run,
                         "raw_days": settings.raw_retention_days,
-                        "evidence_days": settings.evidence_retention_days,
+                        # Never reaches a sealed month whose rows are not yet
+                        # in exports/ — pruning it would leave only the digest.
+                        "evidence_days": protected_evidence_days(settings.evidence_retention_days),
                         "cohort_days": settings.cohort_retention_days,
                     },
                 )
