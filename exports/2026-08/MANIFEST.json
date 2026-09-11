@@ -1,0 +1,59 @@
+{
+  "code_commit": "b90f616b2d9a8e44cadde7c2c6e88ef3042876db",
+  "exported_at_utc": "2026-09-11T08:01:47.968020+00:00",
+  "files": {
+    "outcome.labels.tsv.gz": {
+      "rows": 188541,
+      "sha256": "6ee96c9c4eb2f3750e35923e5b8e224c872e608d5f577e70de498116a5b159c0"
+    },
+    "register.predictions.tsv.gz": {
+      "rows": 198761,
+      "sha256": "03089ed6b495b3cbe694180c1e028a309407dbfed1983ce46ac28bfc2243c376"
+    },
+    "results/decide.champion_history.csv.gz": {
+      "rows": 0,
+      "sha256": "5eb26723f4309dc180a24c2bacb8e6f6f65e2389a80342f12cee0f2b7ee941f9"
+    },
+    "results/decide.model_decisions.csv.gz": {
+      "rows": 0,
+      "sha256": "86e7e4642efa81821174bce4fb53a1339e5d38a4808e88911c14754f272351bd"
+    },
+    "results/decide.trigger_evaluations.csv.gz": {
+      "rows": 27,
+      "sha256": "3840e4efd93d87f60e8750da3071c193ada7ce0d70a00e511b3ad858b532404c"
+    },
+    "results/outcome.calibration_bins.csv.gz": {
+      "rows": 4010,
+      "sha256": "d15740414cf21ac07d60a498311807572a9ecd662ab01534c15eb83b25f8b00b"
+    },
+    "results/outcome.evaluations.csv.gz": {
+      "rows": 5,
+      "sha256": "c78d3f701e16709f3f333a0d385e3080a81ddeb89dbed6cb0a35e00b083bbcb6"
+    },
+    "results/outcome.label_agreement.csv.gz": {
+      "rows": 162,
+      "sha256": "90933b5ea7c7f34d883515689ea59747789fd9cb204cc10108e9b693a9576eaa"
+    },
+    "results/outcome.liftwing_scores.csv.gz": {
+      "rows": 5081,
+      "sha256": "33d5fd1c4cc4c06fb1bdf3ae05a9dbef758cc4daa61d58a046994e19c105e825"
+    },
+    "results/outcome.prediction_metrics.csv.gz": {
+      "rows": 3200,
+      "sha256": "e5c00c1ad29f4aa17fac7675dd86096370a428527cf5f9aa05eff339698b3ab0"
+    },
+    "results/register.model_registry.csv.gz": {
+      "rows": 5,
+      "sha256": "f28b69d8afa5a6525d5171729711b67813c83bf07df764e556ccc5b12a4e7f12"
+    },
+    "results/register.reproductions.csv.gz": {
+      "rows": 32,
+      "sha256": "77e3144aaeb74166c6ad16a88151f367fc45462539ed3920db56ae6a1b43a6a0"
+    }
+  },
+  "month": "2026-08",
+  "seal": {
+    "digest": "be65e87d48a7fa18e087e193b43979e09dc30e058956122dd25773bece9c33bb",
+    "file": "seals/2026-08.json"
+  }
+}
