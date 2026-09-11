@@ -5,7 +5,28 @@ import type { StatusSnapshot } from "../../lib/status";
 
 // A job is late once it has missed several scheduled runs, not one. GitHub's
 // cron is best-effort and a single skipped slot is normal (SRS R-5).
-const STALE_MINUTES = { ingest: 35, label: 95 } as const;
+//
+// Each job against its own schedule. Everything not listed was held to an hour,
+// so every daily job showed red every day and a red mark stopped meaning
+// anything — the same failure the watchdog had.
+const DAY = 26 * 60;
+const WEEK = 7 * 24 * 60 + 120;
+const STALE_MINUTES = {
+  ingest: 35,
+  score: 35,
+  gapfill: 35,
+  apply_reverts: 35,
+  label_secondary: 35,
+  label: 95,
+  metrics: DAY,
+  triggers: DAY,
+  liftwing: DAY,
+  agreement: DAY,
+  seal: DAY,
+  retention: DAY,
+  reproduce: WEEK,
+  reconcile: WEEK,
+} as const;
 
 function pct(value: number | null | undefined, digits = 4) {
   return value === null || value === undefined ? "—" : value.toFixed(digits);

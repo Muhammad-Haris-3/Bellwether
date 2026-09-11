@@ -1,11 +1,16 @@
 name: Metrics
 
-# Every six hours.
+# Daily.
 #
 # Grades the predictions the register already holds, against outcomes that keep
-# arriving. More often than daily because maturity is continuous: a prediction
-# written this morning becomes gradeable tonight, and a metric that only moves
-# once a day is a metric that is wrong for most of the day.
+# arriving. It ran every six hours, on the argument that maturity is continuous
+# and a metric that moves once a day is stale for most of it. That argument
+# lost on 2026-09-10, when Neon paused the project for spending its monthly
+# transfer allowance and this job was a third of the spend. Under a seven-day
+# maturity window one day adds about a twenty-third of the graded population,
+# so a figure a day old differs from a fresh one by little; a project that has
+# stopped publishing anything differs by everything. Twice daily would sit at
+# about 95% of the allowance.
 #
 # This job MEASURES. It does not touch the champion, and it must never grow a
 # path that does — the moment evaluation feeds back into model selection outside
@@ -13,7 +18,7 @@ name: Metrics
 # in-sample number.
 on:
   schedule:
-    - cron: "7 */6 * * *"
+    - cron: "7 0 * * *"
   workflow_dispatch:
     inputs:
       maturity_hours:

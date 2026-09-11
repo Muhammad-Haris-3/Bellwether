@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -124,11 +125,11 @@ SELECT p.revid, p.score, e.event_ts,
 
 # The reference distribution: the events the champion was fitted to.
 #
-# Recomputed from rc_events rather than stored. That is sufficient while the
-# training window is inside the 30-day raw retention and stops being possible
-# afterwards — at which point PSI is recorded as unavailable with a reason
-# rather than quietly becoming zero. A stored reference is the eventual fix; a
-# silently disabled drift detector is the thing to avoid in the meantime.
+# Built from rc_events once per champion and then kept (_reference_columns).
+# Until it is kept, it can only be built while the training window is inside the
+# 30-day raw retention — afterwards PSI is recorded as unavailable with a reason
+# rather than quietly becoming zero. A silently disabled drift detector is the
+# thing to avoid.
 REFERENCE_SQL = """
 SELECT e.revid, e.old_revid, e.event_ts, e.ns, e.title, e.user_name, e.user_id,
        e.is_anon, e.is_temp, e.is_minor, e.is_bot, e.comment, e.comment_hidden,
@@ -309,6 +310,48 @@ def _matrix(rows: list[dict[str, Any]]) -> dict[str, np.ndarray]:
     return {name: np.asarray(values, dtype=float) for name, values in columns.items()}
 
 
+def _reference_columns(
+    conn: Any, champion: dict[str, Any], cache_dir: str | None
+) -> dict[str, np.ndarray] | None:
+    """The drift reference for this champion: built once, then read back.
+
+    It is a fixed function of the champion — the events of its training window,
+    folded by this builder — and it was re-read from rc_events every day: the
+    whole window, every column, ~170k rows. That was about 70% of what triggers
+    read and a fifth of the transfer that paused the project on 2026-09-10.
+
+    Kept under BELLWETHER_CACHE_DIR, which the workflow persists with
+    actions/cache keyed on the builder's source, so changing how features are
+    built rebuilds it. Unset — locally, in tests — it is rebuilt every run, as
+    before.
+
+    Frozen at its first build rather than re-read, so it also stops shrinking
+    as retention prunes the training window from under it: closer to "the
+    events the champion was fitted to" than a reference losing a day a day.
+    Nothing is stored when the window has already aged out entirely: an empty
+    reference kept forever would outlive the gap it was a symptom of.
+    """
+    path = Path(cache_dir) / f"{champion['model_version']}.npz" if cache_dir else None
+    if path is not None and path.exists():
+        with np.load(path) as stored:
+            return {name: stored[name] for name in MONITORED_FEATURES}
+
+    with conn.cursor() as cur:
+        cur.execute(
+            REFERENCE_SQL,
+            {"start": champion["training_start"], "end": champion["training_end"]},
+        )
+        reference = cur.fetchall()
+    if not reference:
+        return None
+
+    columns = _matrix(reference)
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(path, **columns)  # type: ignore[arg-type]
+    return columns
+
+
 def run(*, window_day: date | None = None, retrain: bool = True) -> dict[str, Any]:
     run_id = new_run_id()
     settings = get_settings()
@@ -340,18 +383,14 @@ def run(*, window_day: date | None = None, retrain: bool = True) -> dict[str, An
                 last_train = (cur.fetchone() or {}).get("at")
 
                 cur.execute(
-                    REFERENCE_SQL,
-                    {"start": champion["training_start"], "end": champion["training_end"]},
-                )
-                reference = cur.fetchall()
-
-                cur.execute(
                     REFERENCE_SCORES_SQL,
                     {"version": version, "days": pre.ROLLING_WINDOW_DAYS},
                 )
                 reference_scores = np.asarray(
                     [float(r["score"]) for r in cur.fetchall()], dtype=float
                 )
+
+            ref_columns = _reference_columns(conn, champion, settings.cache_dir)
 
         # --- decay ---------------------------------------------------------
         drop = None
@@ -362,8 +401,7 @@ def run(*, window_day: date | None = None, retrain: bool = True) -> dict[str, An
 
         # --- drift ---------------------------------------------------------
         per_feature: dict[str, float] = {}
-        if reference and matured:
-            ref_columns = _matrix(reference)
+        if ref_columns is not None and matured:
             cur_columns = _matrix(matured)
             for name in MONITORED_FEATURES:
                 value = psi(ref_columns[name], cur_columns[name])

@@ -1,6 +1,13 @@
 name: Reproduce
 
-# Daily.
+# Weekly, over the week.
+#
+# Daily until 2026-09-10, when Neon paused the project for spending its monthly
+# transfer allowance and this job was the largest single reader: every run
+# rebuilt thirty days of state from rc_events to check two days of predictions.
+# The rebuild costs the same whatever the check window is, so the check window
+# is now seven days and the run weekly — the same predictions are sampled, at a
+# seventh of the reads. A regression is found within a week rather than a day.
 #
 # Re-derives a deterministic sample of stored predictions from the raw events
 # and requires the same feature hash and the same score (M3-FR-17, M3-FR-18).
@@ -15,13 +22,13 @@ name: Reproduce
 # artifact that wrote it and running it again.
 on:
   schedule:
-    - cron: "19 5 * * *"
+    - cron: "19 5 * * 0"
   workflow_dispatch:
     inputs:
       days:
         description: "How far back to re-derive"
         required: false
-        default: "2"
+        default: "7"
       percent:
         description: "Sample size, per cent of predictions in the window"
         required: false
@@ -65,7 +72,7 @@ jobs:
         run: |
           set -o pipefail
           python -m bellwether.reproduce \
-            --days "${{ inputs.days || '2' }}" \
+            --days "${{ inputs.days || '7' }}" \
             --percent "${{ inputs.percent || '5' }}" \
             --history-days "${{ inputs.history_days || '30' }}"             ${{ inputs.explain && '--explain' || '' }} 2>&1 | tee reproduce-output.txt
 
