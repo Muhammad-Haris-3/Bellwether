@@ -31,7 +31,7 @@ jobs:
   ingest:
     name: Ingest and derive free labels
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     env:
       BELLWETHER_DATABASE_URL: ${{ secrets.BELLWETHER_DATABASE_URL }}

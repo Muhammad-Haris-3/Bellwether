@@ -89,7 +89,13 @@ class Settings(BaseSettings):
     # Bounds one ingestion run so it finishes inside the workflow's 10-minute
     # budget (NFR-5). A run that hits the cap is not an error: it advances the
     # cursor as far as it got and the next run continues.
-    max_pages_per_run: int = 40
+    #
+    # 120, up from 40. GitHub fires this */10 cron about six times a day, not
+    # 144, and 40 pages is ~5 hours of the feed — barely keeping pace, so the
+    # September outage left a three-week backlog that grew instead of shrinking.
+    # 120 is three minutes at the request ceiling and ~15 hours a run. The cap
+    # only binds while behind; a caught-up run stops at now.
+    max_pages_per_run: int = 120
 
     # Bounds one labelling run the same way. 6,000 (revid, checkpoint) pairs
     # collapse to at most 6,000 distinct revisions, so at 50 revids per request

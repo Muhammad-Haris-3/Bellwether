@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
 
@@ -336,12 +337,32 @@ SELECT e.revid, e.user_name, e.user_id, e.title, k.known_at,
  ORDER BY k.known_at, e.revid
 """
 
-APPLY_EDITOR_REVERT_SQL = """
-UPDATE landing.editor_state SET edits_reverted = edits_reverted + 1 WHERE user_key = %(key)s
+# Set-based, not a statement per revert.
+#
+# The per-row version cost three round trips a revert. Behind the outage
+# backlog that was ~11,000 reverts a run, eight minutes of a ten-minute budget,
+# and the job timed out before scoring on most runs. apply_reverts only ever
+# UPDATEs these tables, so whether a row exists cannot change mid-run, and
+# checking it once up front answers what each rowcount used to.
+EXISTING_EDITORS_SQL = """
+SELECT user_key FROM landing.editor_state WHERE user_key = ANY(%(keys)s)
 """
 
-APPLY_PAGE_REVERT_SQL = """
-UPDATE landing.page_state SET edits_reverted = edits_reverted + 1 WHERE page_key = %(key)s
+EXISTING_PAGES_SQL = """
+SELECT page_key FROM landing.page_state WHERE page_key = ANY(%(keys)s)
+"""
+
+# One editor can be named by several reverts in a batch, hence the count.
+APPLY_EDITOR_REVERTS_SQL = """
+UPDATE landing.editor_state s SET edits_reverted = s.edits_reverted + v.n
+  FROM unnest(%(keys)s::text[], %(counts)s::int[]) AS v(k, n)
+ WHERE s.user_key = v.k
+"""
+
+APPLY_PAGE_REVERTS_SQL = """
+UPDATE landing.page_state s SET edits_reverted = s.edits_reverted + v.n
+  FROM unnest(%(keys)s::text[], %(counts)s::int[]) AS v(k, n)
+ WHERE s.page_key = v.k
 """
 
 # Flags only ever go false -> true, so a retry that lands cannot un-record an
@@ -372,9 +393,19 @@ def apply_reverts(conn: Any, *, days: int = 30) -> dict[str, int]:
     replay uses, so the two arrive at the same counters.
     """
     applied = moved = missing = retried = partial = 0
+    editor_n: Counter[str] = Counter()
+    page_n: Counter[str] = Counter()
+    marks: list[dict[str, Any]] = []
     with conn.cursor() as cur:
         cur.execute(PENDING_REVERTS_SQL, {"days": days})
         pending = cur.fetchall()
+
+        users = sorted({user_key(e) for e in pending if not e["editor_done"]})
+        pages = sorted({page_key(e) for e in pending if not e["page_done"]})
+        cur.execute(EXISTING_EDITORS_SQL, {"keys": users})
+        have_editor = {row["user_key"] for row in cur.fetchall()}
+        cur.execute(EXISTING_PAGES_SQL, {"keys": pages})
+        have_page = {row["page_key"] for row in cur.fetchall()}
 
         for event in pending:
             # Attempted before, whichever sides landed. Counting only the
@@ -391,14 +422,14 @@ def apply_reverts(conn: Any, *, days: int = 30) -> dict[str, int]:
             # counter stayed short forever while the record claimed success —
             # invisible, because counters_moved cannot tell the two apart.
             editor_done = bool(event["editor_done"])
-            if not editor_done:
-                cur.execute(APPLY_EDITOR_REVERT_SQL, {"key": user_key(event)})
-                editor_done = cur.rowcount > 0
+            if not editor_done and user_key(event) in have_editor:
+                editor_n[user_key(event)] += 1
+                editor_done = True
 
             page_done = bool(event["page_done"])
-            if not page_done:
-                cur.execute(APPLY_PAGE_REVERT_SQL, {"key": page_key(event)})
-                page_done = cur.rowcount > 0
+            if not page_done and page_key(event) in have_page:
+                page_n[page_key(event)] += 1
+                page_done = True
 
             # An edit whose editor or page has never been folded online cannot
             # be incremented yet. It stays outstanding and is retried on later
@@ -412,16 +443,29 @@ def apply_reverts(conn: Any, *, days: int = 30) -> dict[str, int]:
             else:
                 missing += 1
 
-            cur.execute(
-                MARK_APPLIED_SQL,
+            marks.append(
                 {
                     "revid": event["revid"],
                     "moved": editor_done or page_done,
                     "editor": editor_done,
                     "page": page_done,
-                },
+                }
             )
             applied += 1
+
+        if editor_n:
+            cur.execute(
+                APPLY_EDITOR_REVERTS_SQL,
+                {"keys": list(editor_n), "counts": list(editor_n.values())},
+            )
+        if page_n:
+            cur.execute(
+                APPLY_PAGE_REVERTS_SQL,
+                {"keys": list(page_n), "counts": list(page_n.values())},
+            )
+        # executemany pipelines: one round trip for the batch, not one a row.
+        if marks:
+            cur.executemany(MARK_APPLIED_SQL, marks)
 
     return {
         "applied": applied,
