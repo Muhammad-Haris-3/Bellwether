@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     # 120, up from 40. GitHub fires this */10 cron about six times a day, not
     # 144, and 40 pages is ~5 hours of the feed — barely keeping pace, so the
     # September outage left a three-week backlog that grew instead of shrinking.
-    # 120 is three minutes at the request ceiling and ~15 hours a run. The cap
+    # 120 is three minutes at the request ceiling and ~24 hours a run. The cap
     # only binds while behind; a caught-up run stops at now.
     max_pages_per_run: int = 120
 
