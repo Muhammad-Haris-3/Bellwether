@@ -8,7 +8,7 @@
 # environment passed — because the local one had it installed by hand.
 -r requirements-serve.txt
 
-pytest==8.4.1
+pytest==9.0.3
 pyyaml==6.0.2
 respx==0.22.0
 ruff==0.12.5
