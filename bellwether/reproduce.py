@@ -79,6 +79,14 @@ SELECT e.revid, e.old_revid, e.event_ts, e.ns, e.title, e.user_name, e.user_id,
 
 # Was this editor or page already carrying state before the replay begins?
 # Judged on what was SCORED, for the same reason as above.
+#
+# The first limb alone cannot see past retention: rc_events and predictions are
+# both pruned at thirty days, so an editor or page whose earlier edits were
+# scored and then pruned looked new. Its persisted counters still held those
+# edits, the replay did not, and the prediction was counted unreproducible. On
+# 2026-10-26 that was 5,214 of 20,921 champion predictions on pages alone, and
+# the run reported half its sample as failures. The persisted first_seen_utc
+# survives the pruning, so it answers what the events no longer can.
 PREDATES_SQL = """
 SELECT EXISTS (
     SELECT 1
@@ -87,6 +95,12 @@ SELECT EXISTS (
      WHERE (e.user_name = %(user_name)s OR e.title = %(title)s)
        AND p.role = 'champion'
        AND p.scored_at < %(history_start)s
+) OR EXISTS (
+    SELECT 1 FROM landing.editor_state
+     WHERE user_key = %(user_key)s AND first_seen_utc < %(history_start)s
+) OR EXISTS (
+    SELECT 1 FROM landing.page_state
+     WHERE page_key = %(page_key)s AND first_seen_utc < %(history_start)s
 ) AS predates
 """
 
@@ -446,6 +460,8 @@ def _predates(conn: Any, event: dict[str, Any], history_start: datetime) -> bool
             {
                 "user_name": event["user_name"],
                 "title": event["title"],
+                "user_key": state.user_key(event),
+                "page_key": state.page_key(event),
                 "history_start": history_start,
             },
         )

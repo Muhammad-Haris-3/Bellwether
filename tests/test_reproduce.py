@@ -282,6 +282,45 @@ def test_state_built_before_the_window_is_out_of_scope_not_a_failure(
 
 
 @pytest.mark.db
+def test_state_whose_events_were_pruned_is_out_of_scope_not_a_failure(
+    fresh_db: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retention prunes the events and predictions that built a page's counters,
+    but not the counters. With nothing left to join, the page looked new and the
+    prediction failed; half of production's sample did, on 2026-10-26."""
+    monkeypatch.setattr(registry, "MODELS_DIR", tmp_path)
+    path = tmp_path / "champion-pruned.pkl"
+    path.write_bytes(pickle.dumps(ConstantModel(), protocol=5))
+    digest = registry.artifact_sha256(path)
+
+    revid = next(r for r in range(100, 5_000) if reproduce.sampled(r))
+
+    with connect() as conn:
+        _register(conn, "champion-pruned", digest)
+        # Counters from edits forty days old, whose rows retention has removed.
+        conn.execute(
+            "INSERT INTO landing.page_state (page_key, first_seen_utc, last_seen_utc, "
+            "edits_seen, edits_reverted) VALUES ('Page', now() - make_interval(days => 40), "
+            "now() - make_interval(days => 40), 3, 0)"
+        )
+        _event(conn, revid, minutes_ago=60)
+        conn.execute(
+            """
+            INSERT INTO register.predictions
+                (revid, event_ts, scored_at, model_version, role, score,
+                 feature_hash, outcome_observable_at_scoring)
+            VALUES (%s, now() - make_interval(mins => 60), now(), 'champion-pruned',
+                    'champion', 0.7, %s, false)
+            """,
+            (revid, "a" * 64),
+        )
+
+    result = reproduce.run(days=2, history_days=30)
+    assert result["state_predates_window"] == 1
+    assert result["unreproducible"] == 0
+
+
+@pytest.mark.db
 def test_a_prediction_from_a_superseded_model_is_not_a_failure(fresh_db: None) -> None:
     """The regression that turned this job permanently red.
 
