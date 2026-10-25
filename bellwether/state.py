@@ -319,6 +319,14 @@ def observe_revert(state: dict[str, Any], event: dict[str, Any]) -> None:
 # only whether SOMETHING moved, so retrying one could re-apply a revert already
 # counted and inflate the counters this exists to correct. NULL means unknown
 # and is left alone; see the migration.
+#
+# Only edits already folded into the counters. A revert of an edit the online
+# path never counted was applied to whichever row later appeared under the same
+# key, so the counter held a revert without the edit. On 2026-10-26 page
+# 'Tangail' stood at edits_seen 1, edits_reverted 3: September edits, never
+# folded because scoring was down while the database was full, reverted onto a
+# row a new edit created on 10-19. The replay cannot see those edits, so
+# reconcile and reproduce both read it as the stored side over-counting.
 PENDING_REVERTS_SQL = f"""
 SELECT e.revid, e.user_name, e.user_id, e.title, k.known_at,
        coalesce(a.editor_moved, false) AS editor_done,
@@ -330,6 +338,7 @@ SELECT e.revid, e.user_name, e.user_id, e.title, k.known_at,
  WHERE k.known_at IS NOT NULL
    AND k.known_at <= now()
    AND e.event_ts >= now() - make_interval(days => %(days)s)
+   AND EXISTS (SELECT 1 FROM landing.state_applied_events f WHERE f.revid = e.revid)
    AND (
          a.revid IS NULL
          OR (a.editor_moved IS NOT NULL AND NOT (a.editor_moved AND a.page_moved))

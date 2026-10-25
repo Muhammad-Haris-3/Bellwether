@@ -52,6 +52,7 @@ def _score_the_batch(conn: Any) -> None:
     for event in batch:
         state.observe(st, event)
     state.persist(conn, st)
+    state.record_folded(conn, [e["revid"] for e in batch])
 
 
 def _replay_and_persist(days: int = 7) -> None:
@@ -337,24 +338,20 @@ def test_a_revert_with_no_row_yet_is_applied_once_the_row_appears(fresh_db: None
             """
         )
 
-        # Discovered before anything was folded: no editor_state row exists.
-        first = state.apply_reverts(conn)
-        assert first["applied"] == 1
-        assert first["no_row_to_move"] == 1
-        assert first["counters_moved"] == 0
+        # Discovered before the edit was folded. It waits rather than being
+        # recorded as handled, so nothing is lost by not applying it yet.
+        assert state.apply_reverts(conn)["applied"] == 0
 
-        # The editor edits again and is scored, so the row now exists — at zero,
-        # because scoring never knows an outcome.
+        # The edit is scored, so its row exists — at zero, because scoring
+        # never knows an outcome.
         _score_the_batch(conn)
         row = conn.execute(
             "SELECT edits_reverted FROM landing.editor_state WHERE user_key = 'Alice'"
         ).fetchone()
         assert row["edits_reverted"] == 0
 
-        # The retry is the fix: previously this revert was marked handled and
-        # would never be looked at again.
         second = state.apply_reverts(conn)
-        assert second["retried"] == 1
+        assert second["applied"] == 1
         assert second["counters_moved"] == 1
 
         row = conn.execute(
@@ -368,6 +365,40 @@ def test_a_revert_with_no_row_yet_is_applied_once_the_row_appears(fresh_db: None
             "SELECT edits_reverted FROM landing.editor_state WHERE user_key = 'Alice'"
         ).fetchone()
         assert row["edits_reverted"] == 1
+
+
+@pytest.mark.db
+def test_a_revert_of_an_edit_never_folded_does_not_land_on_a_later_row(fresh_db: None) -> None:
+    """Page 'Tangail', 2026-10-26: edits_seen 1, edits_reverted 3.
+
+    The reverted edits were never folded, so the counters never held them. A
+    later edit by someone else created the row, and the reverts landed on it.
+    A counter must not hold the revert of an edit it does not hold."""
+    with connect() as conn:
+        _event(conn, 1, minutes_ago=300, user="Alice")
+        conn.execute(
+            """
+            INSERT INTO outcome.revert_events (revert_revid, reverted_revid, revert_ts, method)
+            VALUES (2, 1, now() - make_interval(mins => 250), 'mw-undo')
+            """
+        )
+        # A later edit to the same page is scored; edit 1 never was.
+        _event(conn, 3, minutes_ago=100, user="Bob")
+        batch = conn.execute(
+            "SELECT revid, event_ts, title, user_name, user_id FROM landing.rc_events "
+            "WHERE revid = 3"
+        ).fetchall()
+        st = state.load_for(conn, batch)
+        state.observe(st, batch[0])
+        state.persist(conn, st)
+        state.record_folded(conn, [3])
+
+        assert state.apply_reverts(conn)["applied"] == 0
+        page = conn.execute(
+            "SELECT edits_seen, edits_reverted FROM landing.page_state WHERE page_key = 'Page'"
+        ).fetchone()
+    assert page["edits_seen"] == 1
+    assert page["edits_reverted"] == 0
 
 
 @pytest.mark.db
