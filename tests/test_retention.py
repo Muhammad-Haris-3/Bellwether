@@ -223,7 +223,7 @@ def test_sealing_writes_a_committable_file(fresh_db: None, tmp_path: Any) -> Non
 def test_storage_is_reported_against_the_budget(fresh_db: None) -> None:
     """M1-FR-11. A budget nobody measures against is a number in a document."""
     result = retention.run(dry_run=True)
-    assert result["budget_bytes"] == 400_000_000
+    assert result["budget_bytes"] == 450_000_000
     assert result["budget_used_pct"] is not None
 
 

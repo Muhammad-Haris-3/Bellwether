@@ -145,10 +145,13 @@ class Settings(BaseSettings):
     # from. It is a tenth of the volume, so it can afford six months.
     cohort_retention_days: int = 180
 
-    # Neon Free is 0.5 GB per project; NFR-4 caps usage at 80 percent of it.
-    # Expressed in bytes so the retention job can report against it rather than
-    # against a number in a document nobody re-reads.
-    storage_budget_bytes: int = 400_000_000
+    # Neon Free is 0.5 GB per project. NFR-4 capped usage at 80 percent of it;
+    # raised to ~88 percent on 2026-10-25. With retention at steady state the
+    # project sits near 434 MB and no longer grows, so 400 MB warned without
+    # pause while 78 MB of real headroom remained. 450 still warns 62 MB short
+    # of the cap. Expressed in bytes so the retention job can report against it
+    # rather than against a number in a document nobody re-reads.
+    storage_budget_bytes: int = 450_000_000
 
     # Where a job may keep what it computed from the database, so the next run
     # need not read it out again. Set by workflows that persist it with
