@@ -111,20 +111,30 @@ def ensure_tag_ids(conn: Any, names: set[str], cache: dict[str, int]) -> None:
     Cached for the lifetime of a run. Tags are a closed-ish set — 67 distinct
     values across the whole feed — so after the first page a run almost never
     touches this table again.
+
+    Look up before inserting. INSERT ... ON CONFLICT DO NOTHING draws an id from
+    the identity sequence even when the row already exists, and every run used
+    to re-insert every tag it saw. That spent all 32,767 smallint ids on ~70
+    real tags by 2026-10-21, and ingestion died on nextval (see sql/035).
     """
     unknown = names - cache.keys()
     if not unknown:
         return
 
+    select_sql = "SELECT tag_id, tag_name FROM landing.tag_names WHERE tag_name = ANY(%s)"
     with conn.cursor() as cur:
+        cur.execute(select_sql, (list(unknown),))
+        for row in cur.fetchall():
+            cache[row["tag_name"]] = row["tag_id"]
+
+        new = unknown - cache.keys()
+        if not new:
+            return
         cur.executemany(
             "INSERT INTO landing.tag_names (tag_name) VALUES (%s) ON CONFLICT DO NOTHING",
-            [(name,) for name in sorted(unknown)],
+            [(name,) for name in sorted(new)],
         )
-        cur.execute(
-            "SELECT tag_id, tag_name FROM landing.tag_names WHERE tag_name = ANY(%s)",
-            (list(unknown),),
-        )
+        cur.execute(select_sql, (list(new),))
         for row in cur.fetchall():
             cache[row["tag_name"]] = row["tag_id"]
 

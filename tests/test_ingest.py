@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from bellwether.db import connect
-from bellwether.ingest import insert_page, read_cursor, write_cursor
+from bellwether.ingest import ensure_tag_ids, insert_page, read_cursor, write_cursor
 from bellwether.runlog import new_run_id
 
 pytestmark = pytest.mark.db
@@ -183,3 +183,16 @@ def test_the_tag_dimension_does_not_duplicate_across_pages(fresh_db: None) -> No
         rows = conn.execute("SELECT count(*) AS n FROM landing.tag_names").fetchone()
 
     assert rows is not None and rows["n"] == 1
+
+
+def test_known_tags_do_not_spend_ids(fresh_db: None) -> None:
+    """A skipped ON CONFLICT insert still draws an id. Re-inserting known tags
+    on every run spent all 32,767 smallint ids on ~70 tags (sql/035)."""
+    seq = "SELECT last_value FROM landing.tag_names_tag_id_seq"
+    with connect() as conn:
+        ensure_tag_ids(conn, {"visualeditor", "mobile edit"}, {})
+        before = conn.execute(seq).fetchone()
+        ensure_tag_ids(conn, {"visualeditor", "mobile edit"}, {})  # a new run: empty cache
+        after = conn.execute(seq).fetchone()
+
+    assert before == after
