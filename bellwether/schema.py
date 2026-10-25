@@ -50,6 +50,10 @@ def _column(schema: str, table: str, column: str) -> str:
 # time later. This makes the question "which migration does this database
 # actually have" answerable from outside, in one request.
 SCHEMA_EXPECTATIONS = {
+    "036_m9_unused_primary_keys": (
+        "SELECT to_regclass('outcome.label_checks_pkey') IS NULL"
+        "   AND to_regclass('outcome.labels_pkey') IS NULL AS present"
+    ),
     "035_m9_tag_id_headroom": (
         "SELECT EXISTS (SELECT 1 FROM pg_sequence"
         "                WHERE seqrelid ="
