@@ -50,6 +50,12 @@ def _column(schema: str, table: str, column: str) -> str:
 # time later. This makes the question "which migration does this database
 # actually have" answerable from outside, in one request.
 SCHEMA_EXPECTATIONS = {
+    "035_m9_tag_id_headroom": (
+        "SELECT EXISTS (SELECT 1 FROM pg_sequence"
+        "                WHERE seqrelid ="
+        "                      pg_get_serial_sequence('landing.tag_names', 'tag_id')::regclass"
+        "                  AND seqmin = -32768) AS present"
+    ),
     "034_m9_storage_headroom": (
         "SELECT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace"
         "                WHERE n.nspname = 'landing' AND p.proname = 'prune_bookkeeping')"
