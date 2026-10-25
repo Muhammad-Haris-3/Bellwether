@@ -122,6 +122,38 @@ def test_repair_is_available_but_only_when_asked(fresh_db: None) -> None:
 
 
 @pytest.mark.db
+def test_a_repair_is_not_followed_by_its_reverts_again(fresh_db: None) -> None:
+    """A repair writes edits_reverted from the replay. If the ledger does not
+    say so, apply_reverts finds the same revert pending and counts it twice."""
+    with connect() as conn:
+        _event(conn, 1, minutes_ago=200)
+        conn.execute(
+            """
+            INSERT INTO outcome.revert_events (revert_revid, reverted_revid, revert_ts, method)
+            VALUES (2, 1, now() - make_interval(mins => 150), 'mw-undo')
+            """
+        )
+        # A wrong counter, so the repair has something to rewrite.
+        conn.execute(
+            "INSERT INTO landing.editor_state (user_key, first_seen_utc, last_seen_utc, "
+            "edits_seen, reverts_performed, edits_reverted) "
+            "VALUES ('Alice', now() - make_interval(mins => 200), "
+            "now() - make_interval(mins => 200), 7, 0, 0)"
+        )
+
+    assert reconcile.run(days=7, repair=True)["repaired"] is True
+
+    with connect() as conn:
+        assert state.apply_reverts(conn)["applied"] == 0
+        row = conn.execute(
+            "SELECT edits_seen, edits_reverted FROM landing.editor_state WHERE user_key = 'Alice'"
+        ).fetchone()
+    assert row["edits_seen"] == 1
+    assert row["edits_reverted"] == 1, "counted once by the repair, not again"
+    assert reconcile.run(days=7)["divergences"] == 0
+
+
+@pytest.mark.db
 def test_keys_older_than_the_window_are_out_of_scope(fresh_db: None) -> None:
     """A replay over N days cannot reproduce a counter built over more than N,
     and judging it anyway would make the agreement rate a function of how far

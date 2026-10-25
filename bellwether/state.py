@@ -187,6 +187,23 @@ def record_folded(conn: Any, revids: list[int], *, source: str = "score") -> int
         return max(cur.rowcount, 0)
 
 
+def record_reverts_folded(conn: Any, revids: list[int]) -> int:
+    """Record that a persisted replay already counts these reverts.
+
+    The revert-side twin of record_folded. A repair writes edits_reverted from
+    the replay, so without this apply_reverts finds the same reverts pending
+    and adds them again on top.
+    """
+    if not revids:
+        return 0
+    with conn.cursor() as cur:
+        cur.executemany(
+            MARK_APPLIED_SQL,
+            [{"revid": r, "moved": True, "editor": True, "page": True} for r in sorted(revids)],
+        )
+        return len(revids)
+
+
 def history_for(state: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
     """The history view for an event: everything folded in *before* it."""
     editor = state.get("editors", {}).get(user_key(event))
@@ -256,6 +273,7 @@ def replay(conn: Any, *, days: int) -> dict[str, Any]:
 
     state: dict[str, Any] = {}
     pending: list[tuple[datetime, dict[str, Any]]] = []
+    reverted: list[int] = []
     coverage: dict[str, Any] = {"scored": 0, "with_history": 0, "by_stratum": {}}
 
     for event in events:
@@ -263,11 +281,12 @@ def replay(conn: Any, *, days: int) -> dict[str, Any]:
 
         # Apply any revert that had already happened by this point.
         still_pending = []
-        for revert_ts, reverted in pending:
+        for revert_ts, target in pending:
             if revert_ts <= now:
-                observe_revert(state, reverted)
+                observe_revert(state, target)
+                reverted.append(target["revid"])
             else:
-                still_pending.append((revert_ts, reverted))
+                still_pending.append((revert_ts, target))
         pending = still_pending
 
         history = history_for(state, event)
@@ -287,9 +306,10 @@ def replay(conn: Any, *, days: int) -> dict[str, Any]:
     # "as of the last event in the window" while the online path's is "as of
     # now", and the two could never agree on the reverts discovered in between.
     horizon = datetime.now(UTC)
-    for known_at, reverted in pending:
+    for known_at, target in pending:
         if known_at <= horizon:
-            observe_revert(state, reverted)
+            observe_revert(state, target)
+            reverted.append(target["revid"])
 
     # The revids this replay folded. A caller that PERSISTS the result has to
     # record them, or the online path will fold them again on top — which is
@@ -300,6 +320,8 @@ def replay(conn: Any, *, days: int) -> dict[str, Any]:
         "coverage": coverage,
         "events": len(events),
         "revids": [event["revid"] for event in events],
+        # Likewise the reverts it folded, for apply_reverts' ledger.
+        "reverted_revids": reverted,
     }
 
 
@@ -657,6 +679,7 @@ def run(*, days: int = 30) -> dict[str, Any]:
             # scorer would fold every replayed event a second time, which is
             # the doubling arriving through the rebuild instead of a promotion.
             record_folded(conn, result["revids"], source="replay")
+            record_reverts_folded(conn, result["reverted_revids"])
             run_ctx.rows_read = result["events"]
             run_ctx.rows_written = editors + pages
 

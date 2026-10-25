@@ -322,6 +322,7 @@ def run(*, days: int = WINDOW_DAYS, repair: bool = False, show: int = 15) -> dic
                 # second time into a counter that already contains it, which is
                 # the doubling this ledger exists to prevent.
                 state.record_folded(conn, result["revids"], source="replay")
+                state.record_reverts_folded(conn, result["reverted_revids"])
                 ctx.rows_written = editors + pages
 
     checked = counts["editors_checked"] + counts["pages_checked"]
