@@ -1,10 +1,10 @@
 {
   "algorithm": "sha256",
-  "digest": "aca67a06606ce8fa3d1d266f51f170e8171eea001c4579c8f80d01fbe502dca6",
+  "digest": "6cf7ceb97acdc43e614a31f25afeb6d9dcae278a7d54c1e3f9a447a56b1a4766",
   "month": "2026-10",
   "row_counts": {
-    "outcome.labels": 330994,
+    "outcome.labels": 315562,
     "register.predictions": 138884
   },
-  "sealed_at_utc": "2026-11-08T10:16:14.262246+00:00"
+  "sealed_at_utc": "2026-11-09T11:26:37.553982+00:00"
 }
