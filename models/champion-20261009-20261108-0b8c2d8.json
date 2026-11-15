@@ -1,0 +1,74 @@
+{
+  "artifact_sha256": "e7b5f9a203f671a3da1529b66835dc3daa6071875e78819deb17f0acb6ed4aa9",
+  "code_commit": "0b8c2d8b019a3f8e0a9127f9e86fd64a62c8be51",
+  "feature_names": [
+    "abs_byte_delta",
+    "account_newness",
+    "byte_delta",
+    "comment_has_link",
+    "comment_hidden",
+    "comment_length",
+    "editor_days_known",
+    "editor_edits_reverted",
+    "editor_edits_seen",
+    "editor_is_new_to_us",
+    "editor_reverts_performed",
+    "has_comment",
+    "hour_cos",
+    "hour_sin",
+    "is_logged_out",
+    "is_minor",
+    "is_mobile",
+    "is_new_page",
+    "is_reverting",
+    "is_section_edit",
+    "is_temp_account",
+    "is_visual_editor",
+    "page_edits_reverted",
+    "page_edits_seen",
+    "removed_most_of_page",
+    "tag_count",
+    "weekday_cos",
+    "weekday_sin"
+  ],
+  "human_labels": {
+    "n_available": 0,
+    "n_used": 0,
+    "slices": {
+      "random": 0,
+      "ranked": 0
+    },
+    "weight": 3.0
+  },
+  "hyperparameters": {
+    "learning_rate": 0.1,
+    "max_iter": 200,
+    "random_state": 20260814
+  },
+  "model_version": "champion-20261009-20261108-0b8c2d8",
+  "n_train_events": 180512,
+  "n_train_positives": 36640,
+  "offline_metrics": {
+    "base_rate": 0.202978,
+    "in_sample_brier": 0.115247,
+    "in_sample_pr_auc": 0.613116,
+    "note": "in-sample only; out-of-sample lives in outcome.evaluations and the register"
+  },
+  "segment_bands": {
+    "edit_size": [
+      4.0,
+      26.0,
+      100.0
+    ],
+    "page_activity": [
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  "sklearn_version": "1.9.0",
+  "training_window": [
+    "2026-10-09 00:00:00+00:00",
+    "2026-11-08 00:00:00+00:00"
+  ]
+}
