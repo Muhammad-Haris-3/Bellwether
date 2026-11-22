@@ -56,6 +56,20 @@ SELECT target, rows_affected
 SIZE_SQL = "SELECT sum(pg_database_size(oid)) AS bytes FROM pg_database"
 
 
+# Where the bytes are. The total alone said the project was growing for a month
+# without saying which table, and finding out took a person at the Neon console.
+LARGEST_SQL = """
+SELECT n.nspname || '.' || c.relname AS name,
+       pg_total_relation_size(c.oid) AS total,
+       pg_indexes_size(c.oid) AS indexes,
+       c.reltuples::bigint AS rows_est
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE c.relkind = 'r' AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+ ORDER BY pg_total_relation_size(c.oid) DESC
+ LIMIT 10
+"""
+
+
 def database_bytes(conn: Any) -> int:
     row = conn.execute(SIZE_SQL).fetchone()
     return int(row["bytes"] or 0) if row else 0
@@ -91,6 +105,7 @@ def run(*, dry_run: bool = True) -> dict[str, Any]:
                 )
                 results |= {row["target"]: int(row["rows_affected"]) for row in cur.fetchall()}
             after = database_bytes(conn)
+            largest = conn.execute(LARGEST_SQL).fetchall()
             run_ctx.rows_written = sum(results.values())
             run_ctx.partial = dry_run
 
@@ -109,6 +124,11 @@ def run(*, dry_run: bool = True) -> dict[str, Any]:
     for target, count in results.items():
         print(f"retention: {verb} {count:,} from {target}")
     print(f"retention: {after / 1e6:.1f} MB of a {budget / 1e6:.0f} MB budget ({used_pct}%)")
+    for row in largest:
+        print(
+            f"  {row['name']:<36} {row['total'] / 1e6:7.1f} MB"
+            f"  (indexes {row['indexes'] / 1e6:5.1f})  ~{row['rows_est']:,} rows"
+        )
     if used_pct is not None and used_pct > 80:
         # NFR-4. Loud, because the failure mode after this point is Neon
         # refusing writes, which surfaces as ingestion failing for reasons that
